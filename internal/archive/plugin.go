@@ -138,7 +138,7 @@ func (p *Plugin) configure(raw []byte) ([]byte, error) {
 		p.wg.Add(1)
 		go p.sender()
 	}
-	reg := map[string]any{"schema_version": 2, "metadata": map[string]any{"Name": "cpa-session-archive", "Version": "0.3.0", "Author": "OneTwo", "GitHubRepository": "https://github.com/linonetwo/cpa-session-archive", "ConfigFields": []any{}}, "capabilities": map[string]any{"request_interceptor": true, "request_lifecycle_plugin": true, "response_interceptor": true, "response_stream_interceptor": true, "management_api": true}}
+	reg := map[string]any{"schema_version": 2, "metadata": map[string]any{"Name": "cpa-session-archive", "Version": "0.3.1", "Author": "OneTwo", "GitHubRepository": "https://github.com/linonetwo/cpa-session-archive", "ConfigFields": []any{}}, "capabilities": map[string]any{"request_interceptor": true, "request_lifecycle_plugin": true, "response_interceptor": true, "response_stream_interceptor": true, "management_api": true}}
 	return ok(reg)
 }
 func (p *Plugin) captureRequest(r intercept, afterAuth bool) {
@@ -159,13 +159,18 @@ func (p *Plugin) captureRequest(r intercept, afterAuth bool) {
 	s.RequestedModel = r.RequestedModel
 	s.Stream = r.Stream
 	s.Metadata = sanitizeMeta(r.Metadata)
-	if !afterAuth { enrichDesktopMetadata(&s.Record, r.Headers) }
+	if !afterAuth {
+		enrichDesktopMetadata(&s.Record, r.Headers)
+	}
 	if afterAuth {
 		if p.storeUpstream && len(r.Body) > 0 {
 			s.UpstreamRequest = limit(r.Body, p.max, &s.Truncated)
 		}
-	} else if len(r.Body) > 0 {
-		s.OriginalRequest = limit(r.Body, p.max, &s.Truncated)
+	} else {
+		if len(r.Body) > 0 {
+			s.OriginalRequest = limit(r.Body, p.max, &s.Truncated)
+		}
+		enrichGenericFacets(&s.Record, r.Headers, r.Body)
 	}
 	s.SessionID = sessionID(r.Metadata, s.OriginalRequest, s.UpstreamRequest)
 	s.ParentResponseID = firstJSON(s.OriginalRequest, s.UpstreamRequest, "previous_response_id")
@@ -236,7 +241,19 @@ func (p *Plugin) complete(r completion) {
 	default:
 	}
 }
-func addCompletionFacets(rec *Record){if rec.Facets==nil{rec.Facets=map[string][]string{}};add:=func(k,v string){if strings.TrimSpace(v)!=""{rec.Facets[k]=[]string{v}}};add("model.requested",rec.RequestedModel);add("model.resolved",rec.Model);add("source.format",rec.SourceFormat);add("outcome",rec.Outcome);add("key.id",rec.KeyID);rec.Facets["stream"]=[]string{fmt.Sprint(rec.Stream)};if rec.StatusCode>0{rec.Facets["status.code"]=[]string{fmt.Sprint(rec.StatusCode)}}}
+func addCompletionFacets(rec *Record) {
+	if rec.Facets == nil { rec.Facets = map[string][]string{} }
+	add := func(k, v string) { if strings.TrimSpace(v) != "" { rec.Facets[k] = []string{v} } }
+	add("session.id", rec.SessionID); add("model.requested", rec.RequestedModel); add("model.resolved", rec.Model)
+	add("source.format", rec.SourceFormat); add("outcome", rec.Outcome); add("key.id", rec.KeyID)
+	if rec.Metadata != nil {
+		add("provider.target", findString(rec.Metadata, "target_provider")); add("model.target", findString(rec.Metadata, "target_model"))
+		add("auth.group", findString(rec.Metadata, "group")); add("auth.id", findString(rec.Metadata, "selected_auth_id"))
+		add("caller.scope", findString(rec.Metadata, "caller_scope")); add("request.path", findString(rec.Metadata, "request_path"))
+	}
+	rec.Facets["stream"] = []string{fmt.Sprint(rec.Stream)}
+	if rec.StatusCode > 0 { rec.Facets["status.code"] = []string{fmt.Sprint(rec.StatusCode)} }
+}
 func (p *Plugin) sender() {
 	defer p.wg.Done()
 	for {
@@ -355,11 +372,85 @@ func enrichDesktopMetadata(rec *Record, h http.Header) {
  paths:=make([]string,0,len(meta.Workspaces));for p:=range meta.Workspaces{paths=append(paths,p)};sort.Strings(paths);if len(paths)>0{rec.ProjectPath=paths[0];rec.ProjectName=filepath.Base(strings.ReplaceAll(paths[0],"\\","/"));rem:=meta.Workspaces[paths[0]].AssociatedRemoteURLs;for _,k:=range []string{"origin","forgejo","github","llm"}{if rem[k]!=""{rec.GitRemote=rem[k];break}}}
 }
 func enrichGenericFacets(rec *Record, h http.Header, body []byte) {
- if rec.Facets==nil { rec.Facets=map[string][]string{} }
- addFacet:=func(k,v string){v=strings.TrimSpace(v);if v==""||len(v)>2048{return};for _,old:=range rec.Facets[k]{if old==v{return}};rec.Facets[k]=append(rec.Facets[k],v)}
- for _,pair:=range [][2]string{{"client",rec.Client},{"project.name",rec.ProjectName},{"project.path",rec.ProjectPath},{"git.remote",rec.GitRemote},{"thread.id",rec.ThreadID},{"turn.id",rec.TurnID},{"window.id",rec.WindowID},{"request.kind",rec.RequestKind},{"client.request_id",h.Get("X-Client-Request-Id")},{"request.id",h.Get("X-Request-Id")},{"originator",h.Get("Originator")}}{addFacet(pair[0],pair[1])}
- safeHeaders:=[]string{"X-Claude-Code-Session-Id","X-Session-Id","Session-Id","Thread-Id","X-Thread-Id","X-Conversation-Id","X-Project-Id","X-Workspace-Id"};for _,name:=range safeHeaders{addFacet("header."+strings.ToLower(name),h.Get(name))}
- for _,path:=range []string{"session_id","conversation_id","thread_id","project","project_id","workspace","workspace_id","cwd","repository","repo","metadata.project","metadata.workspace","metadata.cwd","client_metadata.project","client_metadata.workspace"}{addFacet("body."+strings.ReplaceAll(path,"_","."),gjson.GetBytes(body,path).String())}
+	if rec.Facets == nil {
+		rec.Facets = map[string][]string{}
+	}
+	addFacet := func(k, v string) {
+		v = strings.TrimSpace(v)
+		if v == "" || len(v) > 2048 {
+			return
+		}
+		for _, old := range rec.Facets[k] {
+			if old == v {
+				return
+			}
+		}
+		rec.Facets[k] = append(rec.Facets[k], v)
+	}
+	addPathValues := func(name, query string) {
+		r := gjson.GetBytes(body, query)
+		if r.IsArray() {
+			for _, item := range r.Array() {
+				addFacet(name, item.String())
+			}
+			return
+		}
+		addFacet(name, r.String())
+	}
+	for _, pair := range [][2]string{
+		{"client", rec.Client}, {"client.user_agent", h.Get("User-Agent")},
+		{"project.name", rec.ProjectName}, {"project.path", rec.ProjectPath}, {"git.remote", rec.GitRemote},
+		{"session.id", rec.SessionID}, {"thread.id", rec.ThreadID}, {"turn.id", rec.TurnID}, {"window.id", rec.WindowID},
+		{"request.kind", rec.RequestKind}, {"client.request_id", h.Get("X-Client-Request-Id")},
+		{"request.id", h.Get("X-Request-Id")}, {"originator", h.Get("Originator")},
+		{"sdk.language", h.Get("X-Stainless-Lang")}, {"sdk.package_version", h.Get("X-Stainless-Package-Version")},
+		{"client.os", h.Get("X-Stainless-OS")}, {"client.arch", h.Get("X-Stainless-Arch")},
+		{"runtime.name", h.Get("X-Stainless-Runtime")}, {"runtime.version", h.Get("X-Stainless-Runtime-Version")},
+		{"anthropic.version", h.Get("Anthropic-Version")}, {"openai.organization", h.Get("OpenAI-Organization")},
+		{"openai.project", h.Get("OpenAI-Project")},
+	} {
+		addFacet(pair[0], pair[1])
+	}
+	for _, name := range []string{"X-Claude-Code-Session-Id", "X-Session-Id", "Session-Id", "Thread-Id", "X-Thread-Id", "X-Conversation-Id", "X-Project-Id", "X-Workspace-Id"} {
+		addFacet("header."+strings.ToLower(name), h.Get(name))
+	}
+	for _, spec := range [][2]string{
+		{"session.id", "session_id"}, {"conversation.id", "conversation_id"}, {"thread.id", "thread_id"},
+		{"project.name", "project.name"}, {"project.name", "project"}, {"project.id", "project_id"},
+		{"workspace.name", "workspace.name"}, {"workspace.id", "workspace_id"},
+		{"project.path", "project.path"}, {"project.path", "workspace.path"}, {"project.path", "cwd"},
+		{"git.remote", "repository"}, {"git.remote", "repo"}, {"git.branch", "branch"},
+		{"client.name", "metadata.client"}, {"client.name", "metadata.client_name"},
+		{"client.version", "metadata.client_version"}, {"client.ide", "metadata.ide"},
+		{"client.ide_version", "metadata.ide_version"}, {"client.os", "metadata.os"}, {"client.arch", "metadata.arch"},
+		{"project.name", "metadata.project"}, {"workspace.name", "metadata.workspace"}, {"project.path", "metadata.cwd"},
+		{"project.name", "client_metadata.project"}, {"workspace.name", "client_metadata.workspace"},
+		{"reasoning.effort", "reasoning.effort"}, {"service.tier", "service_tier"}, {"tool.choice", "tool_choice"},
+	} {
+		addPathValues(spec[0], spec[1])
+	}
+	for _, spec := range [][2]string{
+		{"tool.type", "tools.#.type"}, {"tool.name", "tools.#.name"}, {"tool.name", "tools.#.function.name"},
+		{"input.type", "input.#.type"}, {"content.type", "input.#.content.#.type"},
+		{"message.role", "messages.#.role"}, {"content.type", "messages.#.content.#.type"},
+	} {
+		addPathValues(spec[0], spec[1])
+	}
+	if rec.ProjectName == "" {
+		rec.ProjectName = firstNonEmpty(firstFacet(rec.Facets, "project.name"), firstFacet(rec.Facets, "workspace.name"))
+	}
+	if rec.ProjectPath == "" {
+		rec.ProjectPath = firstFacet(rec.Facets, "project.path")
+	}
+	if rec.GitRemote == "" {
+		rec.GitRemote = firstFacet(rec.Facets, "git.remote")
+	}
+}
+func firstFacet(facets map[string][]string, name string) string {
+	if values := facets[name]; len(values) > 0 {
+		return values[0]
+	}
+	return ""
 }
 func firstNonEmpty(v ...string) string { for _,s:=range v{if strings.TrimSpace(s)!=""{return s}};return "" }
 func sanitizeMeta(m map[string]any) map[string]any {
