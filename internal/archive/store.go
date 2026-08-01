@@ -12,7 +12,6 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 	"io"
 	"log"
-	"fmt"
 	"strings"
 	"time"
 )
@@ -28,6 +27,7 @@ type SessionSummary struct {
 	LastAt    string `json:"last_at"`
 	KeyID     string `json:"key_id,omitempty"`
 	Model     string `json:"model,omitempty"`
+	Project   string `json:"project,omitempty"`
 }
 type Stats struct {
 	Records         int64 `json:"records"`
@@ -181,7 +181,7 @@ func (s *Store) SessionsFiltered(ctx context.Context,limit int,filters map[strin
 var _=fmt.Sprint
 
 func (s *Store) Session(ctx context.Context, id string) ([]Record, error) {
-	rows, e := s.DB.QueryContext(ctx, `SELECT request_id,trace_id,COALESCE(key_id,''),COALESCE(source_format,''),COALESCE(requested_model,''),COALESCE(model,''),stream,COALESCE(outcome,''),status_code,COALESCE(error,''),started_at,completed_at,COALESCE(parent_response_id,''),COALESCE(response_id,''),COALESCE(original_ref,''),COALESCE(upstream_ref,''),COALESCE(response_ref,''),truncated,COALESCE(metadata_json,''),original_request_gz,upstream_request_gz,response_gz FROM records WHERE session_id=? ORDER BY started_at`, id)
+	rows, e := s.DB.QueryContext(ctx, `SELECT request_id,trace_id,COALESCE(key_id,''),COALESCE(source_format,''),COALESCE(requested_model,''),COALESCE(model,''),stream,COALESCE(outcome,''),status_code,COALESCE(error,''),started_at,completed_at,COALESCE(parent_response_id,''),COALESCE(response_id,''),COALESCE(original_ref,''),COALESCE(upstream_ref,''),COALESCE(response_ref,''),truncated,COALESCE(metadata_json,''),COALESCE(facets_json,''),original_request_gz,upstream_request_gz,response_gz FROM records WHERE session_id=? ORDER BY started_at`, id)
 	if e != nil {
 		return nil, e
 	}
@@ -190,7 +190,7 @@ func (s *Store) Session(ctx context.Context, id string) ([]Record, error) {
 	for rows.Next() {
 		var x Record
 		var stream, trunc int
-		var started, done, meta, or, ur, rr string
+		var started, done, meta, facets, or, ur, rr string
 		var oldO, oldU, oldR []byte
 		x.SessionID = id
 		if e = rows.Scan(&x.RequestID, &x.TraceID, &x.KeyID, &x.SourceFormat, &x.RequestedModel, &x.Model, &stream, &x.Outcome, &x.StatusCode, &x.Error, &started, &done, &x.ParentResponseID, &x.ResponseID, &or, &ur, &rr, &trunc, &meta, &facets, &oldO, &oldU, &oldR); e != nil {
