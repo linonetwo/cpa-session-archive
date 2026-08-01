@@ -737,6 +737,15 @@
           (locale === "zh" ? facetLabelsZh[name] : facetLabelsEn[name]) || name
         );
       }
+      function facetValueLabel(name, value) {
+        var labels = {
+          "request.kind": {
+            turn: locale === "zh" ? "普通对话" : "Conversation turn",
+            compaction: locale === "zh" ? "上下文压缩" : "Context compaction",
+          },
+        };
+        return (labels[name] && labels[name][value]) || value;
+      }
       function xor(data, key) {
         var o = new Uint8Array(data.length);
         for (var i = 0; i < data.length; i++)
@@ -900,7 +909,7 @@
                         '<option value="' +
                         esc(x.value) +
                         '">' +
-                        esc(x.value) +
+                        esc(facetValueLabel(n, x.value)) +
                         " (" +
                         t("sessionCount", { count: x.sessions }) +
                         ")</option>"
@@ -969,7 +978,7 @@
               '<span class="chip">' +
                 esc(facetLabel(x.dataset.facet)) +
                 ": " +
-                esc(x.value) +
+                esc(facetValueLabel(x.dataset.facet, x.value)) +
                 "</span>",
             );
         });
@@ -1117,7 +1126,7 @@
                     "<span>" +
                     esc(facetLabel(key)) +
                     ": " +
-                    esc(value) +
+                    esc(facetValueLabel(key, value)) +
                     "</span>"
                   );
                 })

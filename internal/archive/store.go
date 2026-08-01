@@ -188,23 +188,42 @@ func (s *Store) SessionsFiltered(ctx context.Context, limit int, filters map[str
 	where := []string{}
 	args := []any{}
 	for name, value := range filters {
-		where = append(where, `EXISTS (SELECT 1 FROM record_facets f WHERE f.request_id=records.request_id AND f.name=? AND f.value=?)`)
+		where = append(where, `EXISTS (SELECT 1 FROM record_facets f WHERE f.request_id=r.request_id AND f.name=? AND f.value=?)`)
 		args = append(args, name, value)
 	}
-	q := `SELECT session_id,COUNT(*),MIN(started_at),MAX(completed_at),COALESCE(MAX(NULLIF(key_id,'')),(SELECT fkey.value FROM record_facets fkey JOIN records rk ON rk.request_id=fkey.request_id WHERE rk.session_id=records.session_id AND fkey.name='caller.scope' LIMIT 1),''),COALESCE(MAX(requested_model),''),COALESCE((SELECT f.value FROM record_facets f JOIN records r2 ON r2.request_id=f.request_id WHERE r2.session_id=records.session_id AND f.name='project.name' LIMIT 1),''),COALESCE((SELECT r3.summary FROM records r3 WHERE r3.session_id=records.session_id AND COALESCE(r3.summary,'')<>'' ORDER BY r3.started_at LIMIT 1),'') FROM records`
+	// Aggregate narrow metadata rows in Go. The former GROUP BY query used three
+	// correlated subqueries per session; on a Longhorn SQLite file containing
+	// large legacy BLOB overflow pages that could take more than 30 seconds.
+	q := `SELECT r.session_id,r.started_at,r.completed_at,COALESCE(r.key_id,''),COALESCE(r.requested_model,''),COALESCE(r.summary,''),COALESCE((SELECT f.value FROM record_facets f WHERE f.request_id=r.request_id AND f.name='project.name' LIMIT 1),''),COALESCE((SELECT f.value FROM record_facets f WHERE f.request_id=r.request_id AND f.name='caller.scope' LIMIT 1),'') FROM records r`
 	if len(where) > 0 { q += " WHERE " + strings.Join(where, " AND ") }
-	q += ` GROUP BY session_id ORDER BY MAX(started_at) DESC LIMIT ?`
-	args = append(args, limit)
+	q += ` ORDER BY r.started_at DESC`
 	rows, e := s.DB.QueryContext(ctx, q, args...)
 	if e != nil { return nil, e }
 	defer rows.Close()
-	out := []SessionSummary{}
+	byID := map[string]*SessionSummary{}
+	order := []string{}
 	for rows.Next() {
-		var x SessionSummary
-		if e = rows.Scan(&x.SessionID, &x.Requests, &x.FirstAt, &x.LastAt, &x.KeyID, &x.Model, &x.Project, &x.Summary); e != nil { return nil, e }
-		out = append(out, x)
+		var id, started, completed, keyID, model, summary, project, callerScope string
+		if e = rows.Scan(&id, &started, &completed, &keyID, &model, &summary, &project, &callerScope); e != nil { return nil, e }
+		x := byID[id]
+		if x == nil {
+			x = &SessionSummary{SessionID: id, FirstAt: started, LastAt: completed, KeyID: firstNonEmpty(keyID, callerScope), Model: model, Project: project, Summary: summary}
+			byID[id] = x
+			order = append(order, id)
+		}
+		x.Requests++
+		if x.FirstAt == "" || started < x.FirstAt { x.FirstAt = started }
+		if completed > x.LastAt { x.LastAt = completed }
+		if x.KeyID == "" { x.KeyID = firstNonEmpty(keyID, callerScope) }
+		if x.Model == "" { x.Model = model }
+		if x.Project == "" { x.Project = project }
+		if summary != "" { x.Summary = summary }
 	}
-	return out, rows.Err()
+	if e = rows.Err(); e != nil { return nil, e }
+	if limit > len(order) { limit = len(order) }
+	out := make([]SessionSummary, 0, limit)
+	for _, id := range order[:limit] { out = append(out, *byID[id]) }
+	return out, nil
 }
 
 type SessionPage struct {
