@@ -214,6 +214,37 @@ type SessionPage struct {
 	Offset int `json:"offset"`
 }
 
+func (s *Store) SessionMetadataRange(ctx context.Context, id string, limit, offset int, filters map[string]string) (SessionPage, error) {
+	out := SessionPage{Records: []Record{}, Limit: limit, Offset: offset}
+	where := []string{"session_id=?"}
+	args := []any{id}
+	for name, value := range filters {
+		where = append(where, `EXISTS (SELECT 1 FROM record_facets f WHERE f.request_id=records.request_id AND f.name=? AND f.value=?)`)
+		args = append(args, name, value)
+	}
+	clause := strings.Join(where, " AND ")
+	if e := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM records WHERE `+clause, args...).Scan(&out.Total); e != nil { return out, e }
+	queryArgs := append(append([]any{}, args...), limit, offset)
+	rows, e := s.DB.QueryContext(ctx, `SELECT request_id,trace_id,COALESCE(key_id,''),COALESCE(summary,''),COALESCE(source_format,''),COALESCE(requested_model,''),COALESCE(model,''),stream,COALESCE(outcome,''),status_code,COALESCE(error,''),started_at,completed_at,COALESCE(parent_response_id,''),COALESCE(response_id,''),truncated,COALESCE(metadata_json,''),COALESCE(facets_json,'') FROM records WHERE `+clause+` ORDER BY started_at LIMIT ? OFFSET ?`, queryArgs...)
+	if e != nil { return out, e }
+	defer rows.Close()
+	for rows.Next() {
+		var x Record
+		var stream, truncated int
+		var started, completed, metadata, facets string
+		x.SessionID = id
+		if e = rows.Scan(&x.RequestID, &x.TraceID, &x.KeyID, &x.Summary, &x.SourceFormat, &x.RequestedModel, &x.Model, &stream, &x.Outcome, &x.StatusCode, &x.Error, &started, &completed, &x.ParentResponseID, &x.ResponseID, &truncated, &metadata, &facets); e != nil { return out, e }
+		x.Stream = stream != 0
+		x.Truncated = truncated != 0
+		x.StartedAt, _ = time.Parse(time.RFC3339Nano, started)
+		x.CompletedAt, _ = time.Parse(time.RFC3339Nano, completed)
+		_ = json.Unmarshal([]byte(metadata), &x.Metadata)
+		_ = json.Unmarshal([]byte(facets), &x.Facets)
+		out.Records = append(out.Records, x)
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) SessionRange(ctx context.Context, id string, limit, offset, previewBytes int) (SessionPage, error) {
 	out := SessionPage{Records: []Record{}, Limit: limit, Offset: offset}
 	if e := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM records WHERE session_id=?`, id).Scan(&out.Total); e != nil { return out, e }

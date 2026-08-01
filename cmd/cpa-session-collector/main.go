@@ -119,8 +119,22 @@ func (s *server) session(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.URL.Query().Has("limit") || r.URL.Query().Has("offset") {
 		limit, offset := 20, 0
-		if v, e := strconv.Atoi(r.URL.Query().Get("limit")); e == nil && v > 0 && v <= 100 { limit = v }
+		maxLimit := 100
+		metadataOnly := r.URL.Query().Get("metadata_only") == "true"
+		if metadataOnly { maxLimit = 1000 }
+		if v, e := strconv.Atoi(r.URL.Query().Get("limit")); e == nil && v > 0 && v <= maxLimit { limit = v }
 		if v, e := strconv.Atoi(r.URL.Query().Get("offset")); e == nil && v >= 0 { offset = v }
+		if metadataOnly {
+			filters := map[string]string{}
+			for name, values := range r.URL.Query() {
+				if name == "limit" || name == "offset" || name == "metadata_only" || name == "preview_bytes" || len(values) == 0 { continue }
+				filters[name] = values[0]
+			}
+			out, e := s.s.SessionMetadataRange(r.Context(), id, limit, offset, filters)
+			if e != nil { http.Error(w, e.Error(), 500); return }
+			writeJSON(w, out)
+			return
+		}
 		preview := 65536
 		if v, e := strconv.Atoi(r.URL.Query().Get("preview_bytes")); e == nil && v >= 1024 && v <= 1048576 { preview = v }
 		out, e := s.s.SessionRange(r.Context(), id, limit, offset, preview)
