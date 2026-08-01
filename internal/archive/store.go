@@ -131,6 +131,12 @@ func (s *Store) PutBatch(batch []Record) error {
 		if _, e = st.Exec(r.RequestID, r.TraceID, r.SessionID, r.KeyID, r.SourceFormat, r.RequestedModel, r.Model, r.Stream, r.Outcome, r.StatusCode, r.Error, r.StartedAt.Format(time.RFC3339Nano), r.CompletedAt.Format(time.RFC3339Nano), r.ParentResponseID, r.ResponseID, orig, up, resp, r.Truncated, string(m), facetsJSON(r.Facets)); e != nil {
 			return e
 		}
+		if _, e = tx.Exec(`DELETE FROM record_facets WHERE request_id=?`, r.RequestID); e != nil { return e }
+		for name, values := range r.Facets {
+			for _, value := range values {
+				if _, e = tx.Exec(`INSERT OR IGNORE INTO record_facets(request_id,name,value) VALUES(?,?,?)`, r.RequestID, name, value); e != nil { return e }
+			}
+		}
 	}
 	return tx.Commit()
 }
