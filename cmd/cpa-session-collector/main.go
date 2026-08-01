@@ -28,6 +28,7 @@ func main() {
 	http.HandleFunc("/healthz", s.health)
 	http.HandleFunc("/ingest", s.ingest)
 	http.HandleFunc("/v1/stats", s.stats)
+	http.HandleFunc("/v1/facets", s.facets)
 	http.HandleFunc("/v1/sessions", s.sessions)
 	http.HandleFunc("/v1/sessions/", s.session)
 	http.HandleFunc("/v1/maintenance/gc", s.gc)
@@ -99,7 +100,8 @@ func (s *server) sessions(w http.ResponseWriter, r *http.Request) {
 	if v, e := strconv.Atoi(r.URL.Query().Get("limit")); e == nil && v > 0 && v <= 1000 {
 		limit = v
 	}
-	out, e := s.s.Sessions(r.Context(), limit)
+	filters:=map[string]string{};for name,values:=range r.URL.Query(){if name=="limit"||len(values)==0{continue};filters[name]=values[0]}
+	out, e := s.s.SessionsFiltered(r.Context(), limit, filters)
 	if e != nil {
 		http.Error(w, e.Error(), 500)
 		return
@@ -119,6 +121,7 @@ func (s *server) session(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, out)
 }
+func (s *server) facets(w http.ResponseWriter,r *http.Request){out,e:=s.s.Facets(r.Context());if e!=nil{http.Error(w,e.Error(),500);return};writeJSON(w,out)}
 func (s *server) stats(w http.ResponseWriter, r *http.Request) {
 	out, e := s.s.Stats(r.Context())
 	if e != nil {

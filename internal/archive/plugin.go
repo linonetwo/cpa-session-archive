@@ -5,7 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -71,6 +74,10 @@ func (p *Plugin) Handle(method string, raw []byte) ([]byte, error) {
 	switch method {
 	case "plugin.register", "plugin.reconfigure":
 		return p.configure(raw)
+	case "management.register":
+		return ok(p.managementRegistration())
+	case "management.handle":
+		return p.handleManagement(raw)
 	case "request.intercept_before":
 		var r intercept
 		if json.Unmarshal(raw, &r) != nil {
@@ -131,7 +138,7 @@ func (p *Plugin) configure(raw []byte) ([]byte, error) {
 		p.wg.Add(1)
 		go p.sender()
 	}
-	reg := map[string]any{"schema_version": 2, "metadata": map[string]any{"Name": "cpa-session-archive", "Version": "0.2.0", "Author": "OneTwo", "GitHubRepository": "https://github.com/linonetwo/cpa-session-archive", "ConfigFields": []any{}}, "capabilities": map[string]any{"request_interceptor": true, "request_lifecycle_plugin": true, "response_interceptor": true, "response_stream_interceptor": true}}
+	reg := map[string]any{"schema_version": 2, "metadata": map[string]any{"Name": "cpa-session-archive", "Version": "0.3.0", "Author": "OneTwo", "GitHubRepository": "https://github.com/linonetwo/cpa-session-archive", "ConfigFields": []any{}}, "capabilities": map[string]any{"request_interceptor": true, "request_lifecycle_plugin": true, "response_interceptor": true, "response_stream_interceptor": true, "management_api": true}}
 	return ok(reg)
 }
 func (p *Plugin) captureRequest(r intercept, afterAuth bool) {
@@ -152,6 +159,7 @@ func (p *Plugin) captureRequest(r intercept, afterAuth bool) {
 	s.RequestedModel = r.RequestedModel
 	s.Stream = r.Stream
 	s.Metadata = sanitizeMeta(r.Metadata)
+	if !afterAuth { enrichDesktopMetadata(&s.Record, r.Headers) }
 	if afterAuth {
 		if p.storeUpstream && len(r.Body) > 0 {
 			s.UpstreamRequest = limit(r.Body, p.max, &s.Truncated)
@@ -222,11 +230,13 @@ func (p *Plugin) complete(r completion) {
 	if s.ResponseID == "" {
 		s.ResponseID = responseID(s.Response)
 	}
+	addCompletionFacets(&s.Record)
 	select {
 	case p.q <- s.Record:
 	default:
 	}
 }
+func addCompletionFacets(rec *Record){if rec.Facets==nil{rec.Facets=map[string][]string{}};add:=func(k,v string){if strings.TrimSpace(v)!=""{rec.Facets[k]=[]string{v}}};add("model.requested",rec.RequestedModel);add("model.resolved",rec.Model);add("source.format",rec.SourceFormat);add("outcome",rec.Outcome);add("key.id",rec.KeyID);rec.Facets["stream"]=[]string{fmt.Sprint(rec.Stream)};if rec.StatusCode>0{rec.Facets["status.code"]=[]string{fmt.Sprint(rec.StatusCode)}}}
 func (p *Plugin) sender() {
 	defer p.wg.Done()
 	for {
@@ -333,6 +343,25 @@ func findString(v any, keys ...string) string {
 	}
 	return walk(v)
 }
+func enrichDesktopMetadata(rec *Record, h http.Header) {
+ rec.Client = firstNonEmpty(h.Get("Originator"), h.Get("User-Agent"))
+ rec.ThreadID = firstNonEmpty(h.Get("Thread-Id"), h.Get("X-Thread-Id"))
+ rec.WindowID = h.Get("X-Codex-Window-Id")
+ raw := h.Get("X-Codex-Turn-Metadata")
+ if raw == "" { return }
+ var meta struct { SessionID string `json:"session_id"`; ThreadID string `json:"thread_id"`; TurnID string `json:"turn_id"`; WindowID string `json:"window_id"`; RequestKind string `json:"request_kind"`; Workspaces map[string]struct{ AssociatedRemoteURLs map[string]string `json:"associated_remote_urls"` } `json:"workspaces"` }
+ if json.Unmarshal([]byte(raw), &meta) != nil { return }
+ rec.ThreadID = firstNonEmpty(meta.ThreadID, rec.ThreadID); rec.TurnID=meta.TurnID; rec.WindowID=firstNonEmpty(meta.WindowID,rec.WindowID); rec.RequestKind=meta.RequestKind
+ paths:=make([]string,0,len(meta.Workspaces));for p:=range meta.Workspaces{paths=append(paths,p)};sort.Strings(paths);if len(paths)>0{rec.ProjectPath=paths[0];rec.ProjectName=filepath.Base(strings.ReplaceAll(paths[0],"\\","/"));rem:=meta.Workspaces[paths[0]].AssociatedRemoteURLs;for _,k:=range []string{"origin","forgejo","github","llm"}{if rem[k]!=""{rec.GitRemote=rem[k];break}}}
+}
+func enrichGenericFacets(rec *Record, h http.Header, body []byte) {
+ if rec.Facets==nil { rec.Facets=map[string][]string{} }
+ addFacet:=func(k,v string){v=strings.TrimSpace(v);if v==""||len(v)>2048{return};for _,old:=range rec.Facets[k]{if old==v{return}};rec.Facets[k]=append(rec.Facets[k],v)}
+ for _,pair:=range [][2]string{{"client",rec.Client},{"project.name",rec.ProjectName},{"project.path",rec.ProjectPath},{"git.remote",rec.GitRemote},{"thread.id",rec.ThreadID},{"turn.id",rec.TurnID},{"window.id",rec.WindowID},{"request.kind",rec.RequestKind},{"client.request_id",h.Get("X-Client-Request-Id")},{"request.id",h.Get("X-Request-Id")},{"originator",h.Get("Originator")}}{addFacet(pair[0],pair[1])}
+ safeHeaders:=[]string{"X-Claude-Code-Session-Id","X-Session-Id","Session-Id","Thread-Id","X-Thread-Id","X-Conversation-Id","X-Project-Id","X-Workspace-Id"};for _,name:=range safeHeaders{addFacet("header."+strings.ToLower(name),h.Get(name))}
+ for _,path:=range []string{"session_id","conversation_id","thread_id","project","project_id","workspace","workspace_id","cwd","repository","repo","metadata.project","metadata.workspace","metadata.cwd","client_metadata.project","client_metadata.workspace"}{addFacet("body."+strings.ReplaceAll(path,"_","."),gjson.GetBytes(body,path).String())}
+}
+func firstNonEmpty(v ...string) string { for _,s:=range v{if strings.TrimSpace(s)!=""{return s}};return "" }
 func sanitizeMeta(m map[string]any) map[string]any {
 	out := map[string]any{}
 	for _, k := range []string{"key_id", "requested_model", "target_provider", "target_model", "group", "execution_session_id", "derived_session_id", "caller_scope", "request_path", "selected_auth_id"} {
