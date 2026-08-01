@@ -1,7 +1,7 @@
 package main
 
 import (
-	"cpa-session-archive/internal/archive"
+	"context"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"cpa-session-archive/internal/archive"
 )
 
 type server struct {
@@ -26,6 +28,19 @@ func main() {
 	if env("ARCHIVE_MIGRATE_LEGACY", "false") == "true" {
 		go st.MigrateLegacy()
 	}
+	go func() {
+		if env("ARCHIVE_BACKFILL_SESSION_INDEX", "true") == "true" {
+			if err := st.BackfillSessionIndex(context.Background()); err != nil {
+				log.Printf("session index backfill: %v", err)
+				return
+			}
+		}
+		if env("ARCHIVE_NORMALIZE_SSE", "true") == "true" {
+			if err := st.NormalizeHistoricalSSE(context.Background()); err != nil {
+				log.Printf("historical SSE normalization: %v", err)
+			}
+		}
+	}()
 	s := &server{s: st, q: make(chan archive.Record, 4096)}
 	go s.writer()
 	http.HandleFunc("/healthz", s.health)
@@ -36,7 +51,7 @@ func main() {
 	http.HandleFunc("/v1/sessions/", s.session)
 	http.HandleFunc("/v1/maintenance/gc", s.gc)
 	addr := env("LISTEN_ADDR", ":8080")
-	log.Printf("archive collector v0.4.2 listening on %s, db=%s, store_upstream=%v", addr, dbPath, storeUpstream)
+	log.Printf("archive collector v0.4.3 listening on %s, db=%s, store_upstream=%v", addr, dbPath, storeUpstream)
 	log.Fatal(http.ListenAndServe(addr, nil))
 }
 func env(k, d string) string {

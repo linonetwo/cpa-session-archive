@@ -46,7 +46,7 @@ func OpenStore(path string, storeUpstream bool) (*Store, error) {
 	if e != nil {
 		return nil, e
 	}
-	schema := `CREATE TABLE IF NOT EXISTS records(id INTEGER PRIMARY KEY,request_id TEXT NOT NULL UNIQUE,trace_id TEXT,session_id TEXT NOT NULL,key_id TEXT,source_format TEXT,requested_model TEXT,model TEXT,stream INTEGER,outcome TEXT,status_code INTEGER,error TEXT,started_at TEXT,completed_at TEXT,parent_response_id TEXT,response_id TEXT,original_request_gz BLOB,upstream_request_gz BLOB,response_gz BLOB,truncated INTEGER,metadata_json TEXT);CREATE TABLE IF NOT EXISTS record_facets(request_id TEXT NOT NULL,name TEXT NOT NULL,value TEXT NOT NULL,PRIMARY KEY(request_id,name,value));CREATE INDEX IF NOT EXISTS idx_facets_name_value ON record_facets(name,value);CREATE TABLE IF NOT EXISTS blobs(hash TEXT PRIMARY KEY,media_type TEXT,raw_size INTEGER NOT NULL,codec TEXT NOT NULL,data BLOB NOT NULL);CREATE INDEX IF NOT EXISTS idx_records_session_time ON records(session_id,started_at);CREATE INDEX IF NOT EXISTS idx_records_key_time ON records(key_id,started_at);CREATE INDEX IF NOT EXISTS idx_records_model_time ON records(requested_model,started_at);`
+	schema := `CREATE TABLE IF NOT EXISTS records(id INTEGER PRIMARY KEY,request_id TEXT NOT NULL UNIQUE,trace_id TEXT,session_id TEXT NOT NULL,key_id TEXT,source_format TEXT,requested_model TEXT,model TEXT,stream INTEGER,outcome TEXT,status_code INTEGER,error TEXT,started_at TEXT,completed_at TEXT,parent_response_id TEXT,response_id TEXT,original_request_gz BLOB,upstream_request_gz BLOB,response_gz BLOB,truncated INTEGER,metadata_json TEXT);CREATE TABLE IF NOT EXISTS record_facets(request_id TEXT NOT NULL,name TEXT NOT NULL,value TEXT NOT NULL,PRIMARY KEY(request_id,name,value));CREATE INDEX IF NOT EXISTS idx_facets_name_value ON record_facets(name,value);CREATE TABLE IF NOT EXISTS blobs(hash TEXT PRIMARY KEY,media_type TEXT,raw_size INTEGER NOT NULL,codec TEXT NOT NULL,data BLOB NOT NULL);CREATE INDEX IF NOT EXISTS idx_records_session_time ON records(session_id,started_at);CREATE INDEX IF NOT EXISTS idx_records_key_time ON records(key_id,started_at);CREATE INDEX IF NOT EXISTS idx_records_model_time ON records(requested_model,started_at);CREATE TABLE IF NOT EXISTS session_summaries(session_id TEXT PRIMARY KEY,requests INTEGER NOT NULL,first_at TEXT NOT NULL,last_at TEXT NOT NULL,key_id TEXT NOT NULL DEFAULT '',model TEXT NOT NULL DEFAULT '',project TEXT NOT NULL DEFAULT '',summary TEXT NOT NULL DEFAULT '',summary_at TEXT NOT NULL DEFAULT '');CREATE TABLE IF NOT EXISTS session_facets(session_id TEXT NOT NULL,name TEXT NOT NULL,value TEXT NOT NULL,PRIMARY KEY(session_id,name,value));CREATE INDEX IF NOT EXISTS idx_session_facets_name_value ON session_facets(name,value);CREATE TABLE IF NOT EXISTS session_indexed_requests(request_id TEXT PRIMARY KEY,session_id TEXT NOT NULL);CREATE TABLE IF NOT EXISTS normalized_response_requests(request_id TEXT PRIMARY KEY);`
 	if _, e = db.Exec(schema); e != nil {
 		return nil, e
 	}
@@ -139,6 +139,7 @@ func (s *Store) PutBatch(batch []Record) error {
 				if _, e = tx.Exec(`INSERT OR IGNORE INTO record_facets(request_id,name,value) VALUES(?,?,?)`, r.RequestID, name, value); e != nil { return e }
 			}
 		}
+		if e = indexSessionRecord(tx, r); e != nil { return e }
 	}
 	return tx.Commit()
 }
@@ -166,9 +167,9 @@ func (s *Store) LoadPayload(hash string) ([]byte, error) {
 func facetsJSON(v map[string][]string) string { b,_:=json.Marshal(v);return string(b) }
 
 type FacetCount struct{Name string `json:"name"`;Value string `json:"value"`;Sessions int `json:"sessions"`}
-func (s *Store) Facets(ctx context.Context)([]FacetCount,error){rows,e:=s.DB.QueryContext(ctx,`SELECT f.name,f.value,COUNT(DISTINCT r.session_id) FROM record_facets f JOIN records r ON r.request_id=f.request_id GROUP BY f.name,f.value ORDER BY f.name,COUNT(DISTINCT r.session_id) DESC LIMIT 5000`);if e!=nil{return nil,e};defer rows.Close();out:=[]FacetCount{};for rows.Next(){var x FacetCount;if e=rows.Scan(&x.Name,&x.Value,&x.Sessions);e!=nil{return nil,e};out=append(out,x)};return out,rows.Err()}
+func (s *Store) Facets(ctx context.Context)([]FacetCount,error){rows,e:=s.DB.QueryContext(ctx,`SELECT name,value,COUNT(*) FROM session_facets GROUP BY name,value ORDER BY name,COUNT(*) DESC LIMIT 5000`);if e!=nil{return nil,e};defer rows.Close();out:=[]FacetCount{};for rows.Next(){var x FacetCount;if e=rows.Scan(&x.Name,&x.Value,&x.Sessions);e!=nil{return nil,e};out=append(out,x)};return out,rows.Err()}
 func (s *Store) Sessions(ctx context.Context, limit int) ([]SessionSummary, error) {
-	rows, e := s.DB.QueryContext(ctx, `SELECT session_id,COUNT(*),MIN(started_at),MAX(completed_at),COALESCE(MAX(key_id),''),COALESCE(MAX(requested_model),'') FROM records GROUP BY session_id ORDER BY MAX(started_at) DESC LIMIT ?`, limit)
+	rows, e := s.DB.QueryContext(ctx, `SELECT session_id,requests,first_at,last_at,key_id,model,project,summary FROM session_summaries ORDER BY last_at DESC LIMIT ?`, limit)
 	if e != nil {
 		return nil, e
 	}
@@ -176,7 +177,7 @@ func (s *Store) Sessions(ctx context.Context, limit int) ([]SessionSummary, erro
 	out := []SessionSummary{}
 	for rows.Next() {
 		var x SessionSummary
-		if e = rows.Scan(&x.SessionID, &x.Requests, &x.FirstAt, &x.LastAt, &x.KeyID, &x.Model); e != nil {
+		if e = rows.Scan(&x.SessionID, &x.Requests, &x.FirstAt, &x.LastAt, &x.KeyID, &x.Model, &x.Project, &x.Summary); e != nil {
 			return nil, e
 		}
 		out = append(out, x)
@@ -188,42 +189,23 @@ func (s *Store) SessionsFiltered(ctx context.Context, limit int, filters map[str
 	where := []string{}
 	args := []any{}
 	for name, value := range filters {
-		where = append(where, `EXISTS (SELECT 1 FROM record_facets f WHERE f.request_id=r.request_id AND f.name=? AND f.value=?)`)
+		where = append(where, `EXISTS (SELECT 1 FROM session_facets f WHERE f.session_id=s.session_id AND f.name=? AND f.value=?)`)
 		args = append(args, name, value)
 	}
-	// Aggregate narrow metadata rows in Go. The former GROUP BY query used three
-	// correlated subqueries per session; on a Longhorn SQLite file containing
-	// large legacy BLOB overflow pages that could take more than 30 seconds.
-	q := `SELECT r.session_id,r.started_at,r.completed_at,COALESCE(r.key_id,''),COALESCE(r.requested_model,''),COALESCE(r.summary,''),COALESCE((SELECT f.value FROM record_facets f WHERE f.request_id=r.request_id AND f.name='project.name' LIMIT 1),''),COALESCE((SELECT f.value FROM record_facets f WHERE f.request_id=r.request_id AND f.name='caller.scope' LIMIT 1),'') FROM records r`
+	q := `SELECT s.session_id,s.requests,s.first_at,s.last_at,s.key_id,s.model,s.project,s.summary FROM session_summaries s`
 	if len(where) > 0 { q += " WHERE " + strings.Join(where, " AND ") }
-	q += ` ORDER BY r.started_at DESC`
+	q += ` ORDER BY s.last_at DESC LIMIT ?`
+	args = append(args, limit)
 	rows, e := s.DB.QueryContext(ctx, q, args...)
 	if e != nil { return nil, e }
 	defer rows.Close()
-	byID := map[string]*SessionSummary{}
-	order := []string{}
+	out := []SessionSummary{}
 	for rows.Next() {
-		var id, started, completed, keyID, model, summary, project, callerScope string
-		if e = rows.Scan(&id, &started, &completed, &keyID, &model, &summary, &project, &callerScope); e != nil { return nil, e }
-		x := byID[id]
-		if x == nil {
-			x = &SessionSummary{SessionID: id, FirstAt: started, LastAt: completed, KeyID: firstNonEmpty(keyID, callerScope), Model: model, Project: project, Summary: summary}
-			byID[id] = x
-			order = append(order, id)
-		}
-		x.Requests++
-		if x.FirstAt == "" || started < x.FirstAt { x.FirstAt = started }
-		if completed > x.LastAt { x.LastAt = completed }
-		if x.KeyID == "" { x.KeyID = firstNonEmpty(keyID, callerScope) }
-		if x.Model == "" { x.Model = model }
-		if x.Project == "" { x.Project = project }
-		if summary != "" { x.Summary = summary }
+		var x SessionSummary
+		if e = rows.Scan(&x.SessionID, &x.Requests, &x.FirstAt, &x.LastAt, &x.KeyID, &x.Model, &x.Project, &x.Summary); e != nil { return nil, e }
+		out = append(out, x)
 	}
-	if e = rows.Err(); e != nil { return nil, e }
-	if limit > len(order) { limit = len(order) }
-	out := make([]SessionSummary, 0, limit)
-	for _, id := range order[:limit] { out = append(out, *byID[id]) }
-	return out, nil
+	return out, rows.Err()
 }
 
 type SessionPage struct {

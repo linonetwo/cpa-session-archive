@@ -49,3 +49,15 @@ func TestExtractConversationSummary(t *testing.T) {
 	body := []byte(`{"input":[{"role":"developer","content":[{"type":"input_text","text":"ignore"}]},{"role":"user","content":[{"type":"input_text","text":"  Build   the archive browser  "}]}]}`)
 	if got := extractConversationSummary(body); got != "Build the archive browser" { t.Fatalf("summary=%q", got) }
 }
+
+func TestBackfillSessionProjection(t *testing.T) {
+	store, err := OpenStore(filepath.Join(t.TempDir(), "archive.sqlite"), false)
+	if err != nil { t.Fatal(err) }
+	defer store.DB.Close()
+	now := time.Now()
+	if err = store.PutBatch([]Record{{RequestID: "legacy", SessionID: "session", Summary: "Legacy session", KeyID: "key", RequestedModel: "model", StartedAt: now, CompletedAt: now, Facets: map[string][]string{"project.name": {"repo"}}}}); err != nil { t.Fatal(err) }
+	if _, err = store.DB.Exec(`DELETE FROM session_facets; DELETE FROM session_summaries; DELETE FROM session_indexed_requests`); err != nil { t.Fatal(err) }
+	if err = store.BackfillSessionIndex(context.Background()); err != nil { t.Fatal(err) }
+	sessions, err := store.SessionsFiltered(context.Background(), 10, map[string]string{"project.name": "repo"})
+	if err != nil || len(sessions) != 1 || sessions[0].Summary != "Legacy session" || sessions[0].KeyID != "key" { t.Fatalf("sessions=%+v err=%v", sessions, err) }
+}

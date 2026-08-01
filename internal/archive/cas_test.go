@@ -44,3 +44,25 @@ func TestCompactExternalizesRepeatedLargeText(t *testing.T) {
 		t.Fatalf("manifest not compact: %d >= %d", len(m), len(raw)/2)
 	}
 }
+
+func TestCompactKeepsOnlyCompletedSSETerminalEvent(t *testing.T) {
+	raw := []byte(`event: response.createddata: {"type":"response.created","response":{"id":"r"}}event: response.output_text.deltadata: {"type":"response.output_text.delta","delta":"duplicate"}event: response.completeddata: {"type":"response.completed","response":{"id":"r","output":[{"text":"final"}]}}`)
+	manifest, blobs, err := CompactPayload(raw)
+	if err != nil { t.Fatal(err) }
+	byHash := map[string][]byte{}
+	for _, blob := range blobs { byHash[blob.Hash] = blob.Data }
+	out, err := ExpandPayload(manifest, func(hash string) ([]byte, error) { return byHash[hash], nil })
+	if err != nil { t.Fatal(err) }
+	if bytes.Contains(out, []byte("duplicate")) || !bytes.Contains(out, []byte(`"type":"response.completed"`)) || !bytes.Contains(out, []byte("final")) {
+		t.Fatalf("normalized response=%s", out)
+	}
+}
+
+func TestCompactRetainsIncompleteSSE(t *testing.T) {
+	raw := []byte(`event: response.output_text.deltadata: {"type":"response.output_text.delta","delta":"partial"}`)
+	manifest, blobs, err := CompactPayload(raw)
+	if err != nil { t.Fatal(err) }
+	if len(blobs) != 1 || blobs[0].MediaType != "" { t.Fatalf("blobs=%+v", blobs) }
+	out, err := ExpandPayload(manifest, func(string) ([]byte, error) { return blobs[0].Data, nil })
+	if err != nil || !bytes.Equal(out, raw) { t.Fatalf("out=%s err=%v", out, err) }
+}

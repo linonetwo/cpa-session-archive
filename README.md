@@ -17,6 +17,9 @@ This project uses structural content-addressed storage:
 - encrypted_content and internal passthrough metadata are discarded because they are not useful training text.
 - Upstream translated requests are disabled by default because they usually duplicate the original request.
 - Blobs are gzip-compressed; records contain only hashes and minimal searchable metadata.
+- Successful Responses API SSE streams retain the authoritative
+  `response.completed` event instead of duplicating created, delta and
+  in-progress state. Incomplete and failed streams remain intact for diagnosis.
 
 Exports transparently rehydrate the JSON structure, including repeated references to one attachment blob.
 
@@ -88,6 +91,21 @@ The same data is available through `GET /v1/facets` and arbitrary facet query pa
 ~~~
 
 The collector migrates the v0.1 inline-gzip schema online. Old payload columns are nulled after their CAS manifests are committed. SQLite can reuse freed pages without an immediate blocking VACUUM.
+
+## Storage backend
+
+SQLite WAL on a persistent volume is intentional for the authoritative archive:
+there is one asynchronous writer, while payload bodies are large immutable CAS
+objects. Putting those bodies in an HA PostgreSQL cluster would replicate them
+through WAL, replicas and backups without improving this write path. Small
+`session_summaries` and `session_facets` projections keep the management UI fast
+without scanning payload pages.
+
+For a much larger multi-writer installation, PostgreSQL is a reasonable home for
+searchable metadata and CAS hashes. Large binary/text blobs should still live in
+content-addressed object or volume storage rather than ordinary replicated rows.
+SQLite free pages are reused automatically; a large database file after a
+migration does not by itself mean that the same amount of live data remains.
 
 ## Privacy
 
