@@ -29,7 +29,7 @@ The request path never waits for disk I/O. A full queue, unavailable collector o
 ## Build
 
 ~~~bash
-docker build -t cpa-session-archive:0.2.0 .
+docker build -t cpa-session-archive:0.3.1 .
 ~~~
 
 The image contains both /plugin/cpa-session-archive.so and the collector executable.
@@ -60,9 +60,32 @@ Endpoints:
 
 - GET /healthz
 - GET /v1/stats
+- GET /v1/facets
 - GET /v1/sessions?limit=100
 - GET /v1/sessions/{session-id}
 - POST /v1/maintenance/gc
+
+## Management UI and faceted search
+
+With CPA management API support enabled, CPA-Manager-Plus shows a **Session Archive** plugin page. The page provides storage statistics, dynamic facet selectors, a session table, request/response previews, and JSON export.
+
+Facets are intentionally client-agnostic. The collector indexes metadata when present for:
+
+- project and workspace name/path;
+- Git remote or repository;
+- client tool and originator;
+- session, conversation, thread, turn and window identifiers;
+- requested and resolved model;
+- CPA key identifier, source format, request kind, stream mode, status and outcome;
+- safe project/session/workspace headers and generic request metadata.
+
+Multiple selected facets are combined with AND semantics. Values inside the same metadata dimension are normalized and deduplicated. Authorization, cookies and arbitrary raw headers are never indexed. Existing records remain readable after an upgrade; rich facets are populated for newly archived requests because older records may not contain the original transport metadata.
+
+The same data is available through `GET /v1/facets` and arbitrary facet query parameters on `GET /v1/sessions`, for example:
+
+~~~text
+/v1/sessions?project.name=my-repo&client=codex&model.requested=gpt-5.6-sol
+~~~
 
 The collector migrates the v0.1 inline-gzip schema online. Old payload columns are nulled after their CAS manifests are committed. SQLite can reuse freed pages without an immediate blocking VACUUM.
 
