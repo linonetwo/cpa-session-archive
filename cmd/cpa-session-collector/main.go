@@ -33,7 +33,7 @@ func main() {
 	http.HandleFunc("/v1/sessions/", s.session)
 	http.HandleFunc("/v1/maintenance/gc", s.gc)
 	addr := env("LISTEN_ADDR", ":8080")
-	log.Printf("archive collector v0.4.0 listening on %s, db=%s, store_upstream=%v", addr, dbPath, storeUpstream)
+	log.Printf("archive collector v0.4.1 listening on %s, db=%s, store_upstream=%v", addr, dbPath, storeUpstream)
 	log.Fatal(http.ListenAndServe(addr, nil))
 }
 func env(k, d string) string {

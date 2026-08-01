@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
+	"net"
 	"net/http"
 	"path/filepath"
 	"sort"
@@ -67,7 +69,11 @@ type completion struct {
 }
 
 func NewPlugin() *Plugin {
-	return &Plugin{active: map[string]*state{}, stop: make(chan struct{}), client: &http.Client{Timeout: 5 * time.Second}, max: 64 << 20}
+	transport := &http.Transport{
+		Proxy: nil,
+		DialContext: (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+	}
+	return &Plugin{active: map[string]*state{}, stop: make(chan struct{}), client: &http.Client{Timeout: 5 * time.Second, Transport: transport}, max: 64 << 20}
 }
 func ok(v any) ([]byte, error) { return json.Marshal(envelope{OK: true, Result: v}) }
 func (p *Plugin) Handle(method string, raw []byte) ([]byte, error) {
@@ -131,14 +137,18 @@ func (p *Plugin) configure(raw []byte) ([]byte, error) {
 	if d, e := time.ParseDuration(c.Timeout); e == nil {
 		p.client.Timeout = d
 	}
-	p.endpoint = strings.TrimRight(c.Endpoint, "/") + "/ingest"
+	endpoint := strings.TrimRight(strings.TrimSpace(c.Endpoint), "/")
+	if endpoint == "" {
+		endpoint = "http://127.0.0.1:8080"
+	}
+	p.endpoint = endpoint + "/ingest"
 	p.storeUpstream = c.StoreUpstreamRequest
 	if p.q == nil {
 		p.q = make(chan Record, c.QueueSize)
 		p.wg.Add(1)
 		go p.sender()
 	}
-	reg := map[string]any{"schema_version": 2, "metadata": map[string]any{"Name": "cpa-session-archive", "Version": "0.4.0", "Author": "OneTwo", "GitHubRepository": "https://github.com/linonetwo/cpa-session-archive", "ConfigFields": []any{}}, "capabilities": map[string]any{"request_interceptor": true, "request_lifecycle_plugin": true, "response_interceptor": true, "response_stream_interceptor": true, "management_api": true}}
+	reg := map[string]any{"schema_version": 2, "metadata": map[string]any{"Name": "cpa-session-archive", "Version": "0.4.1", "Author": "OneTwo", "GitHubRepository": "https://github.com/linonetwo/cpa-session-archive", "ConfigFields": []any{}}, "capabilities": map[string]any{"request_interceptor": true, "request_lifecycle_plugin": true, "response_interceptor": true, "response_stream_interceptor": true, "management_api": true}}
 	return ok(reg)
 }
 func (p *Plugin) captureRequest(r intercept, afterAuth bool) {
@@ -260,15 +270,42 @@ func (p *Plugin) sender() {
 	for {
 		select {
 		case rec := <-p.q:
-			b, _ := json.Marshal(rec)
-			req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, p.endpoint, bytes.NewReader(b))
-			req.Header.Set("Content-Type", "application/json")
-			resp, e := p.client.Do(req)
-			if e == nil {
-				resp.Body.Close()
-			}
+			p.sendWithRetry(rec)
 		case <-p.stop:
 			return
+		}
+	}
+}
+
+func (p *Plugin) sendWithRetry(rec Record) {
+	b, _ := json.Marshal(rec)
+	backoff := 250 * time.Millisecond
+	for {
+		req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, p.endpoint, bytes.NewReader(b))
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := p.client.Do(req)
+		if err == nil {
+			resp.Body.Close()
+			if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+				return
+			}
+			err = fmt.Errorf("collector returned HTTP %d", resp.StatusCode)
+		}
+		log.Printf("archive delivery failed request_id=%s endpoint=%s: %v; retrying in %s", rec.RequestID, p.endpoint, err, backoff)
+		timer := time.NewTimer(backoff)
+		select {
+		case <-timer.C:
+		case <-p.stop:
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return
+		}
+		if backoff < 30*time.Second {
+			backoff *= 2
+			if backoff > 30*time.Second {
+				backoff = 30 * time.Second
+			}
 		}
 	}
 }
