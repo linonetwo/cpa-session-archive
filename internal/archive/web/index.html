@@ -1,18 +1,1197 @@
-<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Session Archive</title><style>body{font:14px system-ui;margin:0;background:#f5f6f8;color:#18202a}.wrap{max-width:1500px;margin:auto;padding:20px}h1{margin:0 0 16px}.cards,.filters{display:flex;gap:10px;flex-wrap:wrap}.card,.panel{background:white;border:1px solid #dde2e8;border-radius:10px;padding:14px}.card{min-width:150px}.num{font-size:24px;font-weight:700}.filters{margin:14px 0}.filters label{display:flex;flex-direction:column;gap:4px}.filters select,.filters input,button{padding:8px;border:1px solid #ccd3dc;border-radius:6px;background:white}button{cursor:pointer}table{width:100%;border-collapse:collapse;background:white}th,td{padding:9px;border-bottom:1px solid #edf0f3;text-align:left}tr:hover{background:#f1f7ff}.muted{color:#667085}.drawer{position:fixed;inset:0 0 0 32%;background:white;box-shadow:-4px 0 20px #0003;padding:20px;overflow:auto;display:none}.drawer.open{display:block}pre{white-space:pre-wrap;word-break:break-word;background:#111827;color:#e5e7eb;padding:12px;border-radius:8px;max-height:45vh;overflow:auto}.login{position:fixed;inset:0;background:#fff;display:grid;place-items:center}.login>div{width:420px}.facet-more{max-height:220px;overflow:auto;display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:8px}.filter-head,.filter-actions,.active-filters{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.filter-head{justify-content:space-between;margin-bottom:10px}.filter-head input{min-width:280px}.facet-groups{display:grid;gap:10px}.facet-group{border:1px solid #e2e7ed;border-radius:8px;padding:8px}.facet-group summary{cursor:pointer;font-weight:650}.facet-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:9px;margin-top:9px}.facet-grid label{display:flex;flex-direction:column;gap:4px;min-width:0}.facet-grid select{width:100%;padding:8px;border:1px solid #ccd3dc;border-radius:6px;background:white}.filter-head input,.filter-actions input{padding:8px;border:1px solid #ccd3dc;border-radius:6px;background:white}.filter-actions{margin-top:12px}.active-filters{margin:8px 0}.chip{background:#eaf2ff;color:#184b8a;border-radius:999px;padding:4px 9px}.facet-meta{font-size:12px;color:#667085}.empty{padding:28px;text-align:center;color:#667085}.facet-badges{display:flex;gap:5px;flex-wrap:wrap;margin:8px 0}.facet-badges span{background:#eef2f6;border-radius:5px;padding:3px 6px;font-size:12px}</style></head><body><div class="wrap"><h1>Session Archive</h1><p class="muted">按项目、代码库、客户端工具、会话、模型、工具调用、认证与结果等元信息组合筛选。</p><div id="cards" class="cards"></div><div class="panel"><div class="filter-head"><div><b>分面筛选</b> <span id="resultCount" class="muted"></span></div><input id="facetSearch" placeholder="查找筛选维度，例如 project、IDE、tool…" oninput="filterFacetNames()"></div><div id="activeFilters" class="active-filters"></div><div id="filters" class="facet-groups"></div><div class="filter-actions"><label>最多显示 <input id="limit" type="number" value="100" min="1" max="1000" style="width:80px"></label><button onclick="loadSessions()">应用筛选</button><button onclick="resetFilters()">重置</button></div></div><div class="panel"><table><thead><tr><th>项目 / 工作区</th><th>Session</th><th>请求</th><th>模型</th><th>Key</th><th>最后活动</th></tr></thead><tbody id="rows"></tbody></table></div></div><div id="drawer" class="drawer"><button onclick="closeDrawer()">关闭</button> <button id="download">导出 JSON</button><h2 id="detailTitle"></h2><div id="detail"></div></div><div id="login" class="login"><div class="panel"><h2>连接 CPA 管理 API</h2><label>API Base<input id="base" style="width:100%" value=""></label><br><label>Management Key<input id="key" type="password" style="width:100%"></label><br><button onclick="manualLogin()">登录</button><p class="muted">若 CPAMP 已记住管理密码，本页会自动复用；否则仅在本页内存中使用，不写入存储。</p></div></div><script>
-var session=null,facets=[],lastDetail=null;var facetOrder=['project.name','workspace.name','project.path','git.remote','git.branch','client','client.name','client.ide','client.version','client.os','client.arch','originator','session.id','conversation.id','thread.id','turn.id','window.id','model.requested','model.resolved','model.target','provider.target','key.id','auth.group','outcome','status.code','source.format','request.kind','reasoning.effort','service.tier','tool.name','tool.type','content.type','message.role','stream'];var facetLabels={'project.name':'项目','workspace.name':'工作区','project.path':'路径','project.id':'项目 ID','workspace.id':'工作区 ID','git.remote':'Git 远端','git.branch':'分支','client':'客户端','client.name':'客户端名称','client.version':'客户端版本','client.ide':'IDE','client.ide_version':'IDE 版本','client.user_agent':'User-Agent','client.os':'操作系统','client.arch':'架构','originator':'调用来源','sdk.language':'SDK 语言','sdk.package_version':'SDK 版本','runtime.name':'运行时','runtime.version':'运行时版本','session.id':'Session','conversation.id':'Conversation','thread.id':'Thread','turn.id':'Turn','window.id':'窗口','model.requested':'请求模型','model.resolved':'实际模型','model.target':'目标模型','provider.target':'目标 Provider','key.id':'调用 Key','auth.group':'凭证组','auth.id':'上游凭证','outcome':'结果','status.code':'HTTP 状态','source.format':'协议格式','request.kind':'请求类型','reasoning.effort':'推理档位','service.tier':'服务层','tool.name':'工具名称','tool.type':'工具类型','tool.choice':'工具选择','input.type':'输入类型','content.type':'内容类型','message.role':'消息角色','stream':'流式','caller.scope':'调用范围','request.path':'API 路径'};
-function xor(data,key){var o=new Uint8Array(data.length);for(var i=0;i<data.length;i++)o[i]=data[i]^key[i%key.length];return o}function panelAuth(){try{var raw=localStorage.getItem('cli-proxy-auth');if(!raw)return null;if(raw.indexOf('enc::v1::')===0){var bin=atob(raw.slice(9)),b=new Uint8Array(bin.length);for(var i=0;i<bin.length;i++)b[i]=bin.charCodeAt(i);var kb=new TextEncoder().encode('cli-proxy-api-webui::secure-storage|'+location.host+'|'+navigator.userAgent);raw=new TextDecoder().decode(xor(b,kb))}var x=JSON.parse(raw),s=x.state||x;if(s.apiBase&&s.managementKey)return{base:s.apiBase.replace(/\/$/,''),key:s.managementKey}}catch(e){}return null}
-function manualLogin(){session={base:document.getElementById('base').value.replace(/\/$/,''),key:document.getElementById('key').value};start()}
-async function api(path){var r=await fetch(session.base+'/v0/management/plugins/cpa-session-archive'+path,{headers:{Authorization:'Bearer '+session.key}});if(!r.ok)throw Error(r.status);return r.json()}
-function fmt(n){if(n<1024)return n+' B';if(n<1048576)return(n/1024).toFixed(1)+' KiB';if(n<1073741824)return(n/1048576).toFixed(1)+' MiB';return(n/1073741824).toFixed(1)+' GiB'}
-async function start(){try{var st=await api('/stats');document.getElementById('login').style.display='none';document.getElementById('cards').innerHTML=[['记录',st.records],['Session',st.sessions],['CAS Blob',st.blobs],['逻辑内容',fmt(st.logical_bytes)],['实际压缩',fmt(st.compressed_bytes)],['累计节省',fmt(st.saved_bytes)]].map(function(x){return'<div class="card"><div class="muted">'+x[0]+'</div><div class="num">'+x[1]+'</div></div>'}).join('');facets=await api('/facets');renderFilters();await loadSessions()}catch(e){document.getElementById('login').style.display='grid'}}
-function facetGroup(n){if(/^(project|workspace|git|body\.(project|workspace|cwd|repo|repository))/.test(n))return['project','项目与代码库'];if(/^(client|originator|sdk|runtime|anthropic|openai)/.test(n))return['client','客户端与运行环境'];if(/^(session|conversation|thread|turn|window|header\.)/.test(n))return['session','会话标识'];if(/^(model|provider|source|request|reasoning|service|stream)/.test(n))return['request','模型与请求'];if(/^(tool|input|content|message)/.test(n))return['content','工具与内容'];if(/^(key|auth|caller|outcome|status)/.test(n))return['auth','认证与结果'];return['other','其他元信息']}
-function facetRank(n){var i=facetOrder.indexOf(n);return i<0?10000:i}
-function renderFilters(){var values={},groups={};facets.forEach(function(f){(values[f.name]||(values[f.name]=[])).push(f)});Object.keys(values).sort(function(a,b){return facetRank(a)-facetRank(b)||a.localeCompare(b)}).forEach(function(n){var g=facetGroup(n),entry=groups[g[0]]||(groups[g[0]]={title:g[1],names:[]});entry.names.push(n)});var order=['project','client','session','request','content','auth','other'];document.getElementById('filters').innerHTML=order.filter(function(k){return groups[k]}).map(function(k,gi){var g=groups[k],fields=g.names.map(function(n){var opts=values[n].slice(0,200).map(function(x){return'<option value="'+esc(x.value)+'">'+esc(x.value)+' ('+x.sessions+' sessions)</option>'}).join('');var title=facetLabels[n]||n;return'<label data-filter-name="'+esc((title+' '+n).toLowerCase())+'"><span>'+esc(title)+' <span class="facet-meta">'+esc(n)+' · '+values[n].length+' 值</span></span><select data-facet="'+esc(n)+'" onchange="updateActiveFilters()"><option value="">全部</option>'+opts+'</select></label>'}).join('');return'<details class="facet-group" '+(gi<4?'open':'')+'><summary>'+esc(g.title)+' <span class="facet-meta">'+g.names.length+' 个维度</span></summary><div class="facet-grid">'+fields+'</div></details>'}).join('');updateActiveFilters()}
-function filterFacetNames(){var q=document.getElementById('facetSearch').value.trim().toLowerCase();document.querySelectorAll('[data-filter-name]').forEach(function(x){x.style.display=!q||x.dataset.filterName.indexOf(q)>=0?'':'none'});document.querySelectorAll('.facet-group').forEach(function(x){var visible=Array.from(x.querySelectorAll('[data-filter-name]')).some(function(y){return y.style.display!='none'});x.style.display=visible?'':'none';if(q&&visible)x.open=true})}
-function updateActiveFilters(){var active=[];document.querySelectorAll('[data-facet]').forEach(function(x){if(x.value)active.push('<span class="chip">'+esc(facetLabels[x.dataset.facet]||x.dataset.facet)+': '+esc(x.value)+'</span>')});document.getElementById('activeFilters').innerHTML=active.length?active.join(''):'<span class="muted">未设置筛选条件</span>'}
-async function loadSessions(){var q=new URLSearchParams();document.querySelectorAll('[data-facet]').forEach(function(x){if(x.value)q.set(x.dataset.facet,x.value)});q.set('limit',document.getElementById('limit').value||100);var rows=await api('/sessions?'+q);document.getElementById('resultCount').textContent='· '+rows.length+' 条结果';document.getElementById('rows').innerHTML=rows.length?rows.map(function(x){return'<tr onclick="openSession(\''+esc(x.session_id)+'\')"><td>'+esc(x.project||'—')+'</td><td>'+esc(x.session_id)+'</td><td>'+x.requests+'</td><td>'+esc(x.model||'—')+'</td><td>'+esc(x.key_id||'—')+'</td><td>'+esc(x.last_at)+'</td></tr>'}).join(''):'<tr><td colspan="6" class="empty">没有符合当前分面的 Session</td></tr>';updateActiveFilters()}
-function resetFilters(){document.querySelectorAll('[data-facet]').forEach(function(x){x.value=''});document.getElementById('facetSearch').value='';filterFacetNames();loadSessions()}
-async function openSession(id){var data=await api('/sessions?id='+encodeURIComponent(id));lastDetail=data;document.getElementById('detailTitle').textContent=id;document.getElementById('detail').innerHTML=data.map(function(r,i){var req=decode64(r.original_request),resp=decode64(r.response);return'<div class="panel"><b>#'+(i+1)+' '+esc(r.requested_model||r.model)+' '+esc(r.outcome)+' '+r.status_code+'</b><div class="facet-badges">'+Object.keys(r.facets||{}).sort().map(function(k){return(r.facets[k]||[]).map(function(v){return'<span>'+esc(facetLabels[k]||k)+': '+esc(v)+'</span>'}).join('')}).join('')+'</div><details><summary>Request ('+req.length+')</summary><pre>'+esc(req.slice(0,20000))+'</pre></details><details><summary>Response ('+resp.length+')</summary><pre>'+esc(resp.slice(0,20000))+'</pre></details></div>'}).join('');document.getElementById('drawer').classList.add('open');document.getElementById('download').onclick=function(){var b=new Blob([JSON.stringify(lastDetail,null,2)],{type:'application/json'}),a=document.createElement('a');a.href=URL.createObjectURL(b);a.download=id+'.json';a.click();URL.revokeObjectURL(a.href)}}
-function decode64(x){if(!x)return'';try{return new TextDecoder().decode(Uint8Array.from(atob(x),function(c){return c.charCodeAt(0)}))}catch(e){return'[binary '+x.length+' base64 chars]'}}function closeDrawer(){document.getElementById('drawer').classList.remove('open')}function esc(x){return String(x==null?'':x).replace(/[&<>"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
-var a=panelAuth();if(a){session=a;document.getElementById('base').value=a.base;start()}else{document.getElementById('base').value=location.origin}
-</script></body></html>
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Session Archive</title>
+    <style>
+      body {
+        font: 14px system-ui;
+        margin: 0;
+        background: #f5f6f8;
+        color: #18202a;
+      }
+      .wrap {
+        max-width: 1500px;
+        margin: auto;
+        padding: 20px;
+      }
+      h1 {
+        margin: 0 0 16px;
+      }
+      .cards,
+      .filters {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+      .card,
+      .panel {
+        background: white;
+        border: 1px solid #dde2e8;
+        border-radius: 10px;
+        padding: 14px;
+      }
+      .card {
+        min-width: 150px;
+      }
+      .num {
+        font-size: 24px;
+        font-weight: 700;
+      }
+      .filters {
+        margin: 14px 0;
+      }
+      .filters label {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+      .filters select,
+      .filters input,
+      button {
+        padding: 8px;
+        border: 1px solid #ccd3dc;
+        border-radius: 6px;
+        background: white;
+      }
+      button {
+        cursor: pointer;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        background: white;
+      }
+      th,
+      td {
+        padding: 9px;
+        border-bottom: 1px solid #edf0f3;
+        text-align: left;
+      }
+      tr:hover {
+        background: #f1f7ff;
+      }
+      .muted {
+        color: #667085;
+      }
+      .error {
+        color: #b42318;
+      }
+      .drawer {
+        position: fixed;
+        inset: 0 0 0 32%;
+        background: white;
+        box-shadow: -4px 0 20px #0003;
+        padding: 20px;
+        overflow: auto;
+        display: none;
+      }
+      .drawer.open {
+        display: block;
+      }
+      pre {
+        white-space: pre-wrap;
+        word-break: break-word;
+        background: #111827;
+        color: #e5e7eb;
+        padding: 12px;
+        border-radius: 8px;
+        max-height: 45vh;
+        overflow: auto;
+      }
+      .login {
+        position: fixed;
+        inset: 0;
+        background: #fff;
+        display: grid;
+        place-items: center;
+      }
+      .login > div {
+        width: 420px;
+      }
+      .facet-more {
+        max-height: 220px;
+        overflow: auto;
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+        gap: 8px;
+      }
+      .filter-head,
+      .filter-actions,
+      .active-filters {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+      .filter-head {
+        justify-content: space-between;
+        margin-bottom: 10px;
+      }
+      .filter-head input {
+        min-width: 280px;
+      }
+      .facet-groups {
+        display: grid;
+        gap: 10px;
+      }
+      .facet-group {
+        border: 1px solid #e2e7ed;
+        border-radius: 8px;
+        padding: 8px;
+      }
+      .facet-group summary {
+        cursor: pointer;
+        font-weight: 650;
+      }
+      .facet-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+        gap: 9px;
+        margin-top: 9px;
+      }
+      .facet-grid label {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        min-width: 0;
+      }
+      .facet-grid select {
+        width: 100%;
+        padding: 8px;
+        border: 1px solid #ccd3dc;
+        border-radius: 6px;
+        background: white;
+      }
+      .filter-head input,
+      .filter-actions input {
+        padding: 8px;
+        border: 1px solid #ccd3dc;
+        border-radius: 6px;
+        background: white;
+      }
+      .filter-actions {
+        margin-top: 12px;
+      }
+      .active-filters {
+        margin: 8px 0;
+      }
+      .chip {
+        background: #eaf2ff;
+        color: #184b8a;
+        border-radius: 999px;
+        padding: 4px 9px;
+      }
+      .facet-meta {
+        font-size: 12px;
+        color: #667085;
+      }
+      .empty {
+        padding: 28px;
+        text-align: center;
+        color: #667085;
+      }
+      .facet-badges {
+        display: flex;
+        gap: 5px;
+        flex-wrap: wrap;
+        margin: 8px 0;
+      }
+      .facet-badges span {
+        background: #eef2f6;
+        border-radius: 5px;
+        padding: 3px 6px;
+        font-size: 12px;
+      }
+      .app-layout {
+        display: grid;
+        grid-template-columns: minmax(260px, 330px) minmax(0, 1fr);
+        min-height: 100vh;
+      }
+      .sidebar {
+        border-right: 1px solid #dde2e8;
+        background: #fff;
+        padding: 16px;
+      }
+      .sidebar > details {
+        position: sticky;
+        top: 16px;
+        max-height: calc(100vh - 32px);
+        overflow: auto;
+      }
+      .sidebar summary {
+        cursor: pointer;
+        font-size: 16px;
+        font-weight: 700;
+        display: flex;
+        justify-content: space-between;
+        padding: 8px 2px 14px;
+      }
+      .content {
+        min-width: 0;
+        padding: 24px;
+      }
+      .content header h1 {
+        margin-bottom: 4px;
+      }
+      .cards {
+        margin: 18px 0;
+      }
+      .card {
+        flex: 1;
+        min-width: 170px;
+      }
+      .sessions-panel {
+        padding: 0;
+        overflow: hidden;
+      }
+      .section-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 16px;
+        border-bottom: 1px solid #edf0f3;
+      }
+      .section-head h2 {
+        margin: 0;
+        font-size: 17px;
+      }
+      .table-wrap {
+        overflow: auto;
+      }
+      tbody tr {
+        cursor: pointer;
+      }
+      .conversation-title {
+        font-weight: 650;
+        max-width: 680px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .conversation-meta {
+        margin-top: 4px;
+        font-size: 12px;
+        color: #667085;
+      }
+      .key-pill,
+      .badge {
+        display: inline-block;
+        border-radius: 999px;
+        padding: 3px 8px;
+        background: #eef2f6;
+        font-size: 12px;
+        max-width: 240px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .filter-head input {
+        width: 100%;
+        min-width: 0;
+        box-sizing: border-box;
+      }
+      .facet-grid {
+        grid-template-columns: 1fr;
+      }
+      .facet-group {
+        background: #fafbfc;
+      }
+      .filter-actions {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+      }
+      .filter-actions label {
+        grid-column: 1 / -1;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+      .filter-actions input {
+        width: 72px;
+      }
+      .drawer {
+        inset: 0 0 0 max(340px, 35%);
+        z-index: 20;
+      }
+      .drawer-head {
+        position: sticky;
+        top: -20px;
+        padding: 12px 0;
+        background: white;
+        z-index: 2;
+        display: flex;
+        gap: 8px;
+      }
+      .request-card {
+        margin: 12px 0;
+      }
+      .request-head {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+      }
+      .request-preview {
+        content-visibility: auto;
+        contain-intrinsic-size: 600px;
+      }
+      .load-more {
+        width: 100%;
+        margin: 14px 0;
+      }
+      .login input {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 8px;
+      }
+      @media (max-width: 900px) {
+        .app-layout {
+          grid-template-columns: 1fr;
+        }
+        .sidebar {
+          border-right: 0;
+          border-bottom: 1px solid #dde2e8;
+        }
+        .sidebar > details {
+          position: static;
+          max-height: none;
+        }
+        .drawer {
+          inset: 0;
+        }
+        .content {
+          padding: 14px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="app-layout">
+      <aside class="sidebar">
+        <details id="filterSidebar" open>
+          <summary>
+            <span data-i18n="facetedFilter"></span
+            ><span id="activeCount" class="badge">0</span>
+          </summary>
+          <div class="filter-head">
+            <input
+              id="facetSearch"
+              data-i18n-placeholder="facetSearchPlaceholder"
+              oninput="filterFacetNames()"
+            />
+          </div>
+          <div id="activeFilters" class="active-filters"></div>
+          <div id="filters" class="facet-groups"></div>
+          <div class="filter-actions">
+            <label
+              ><span data-i18n="limit"></span
+              ><input id="limit" type="number" value="100" min="1" max="1000"
+            /></label>
+            <button data-i18n="apply" onclick="loadSessions()"></button>
+            <button data-i18n="reset" onclick="resetFilters()"></button>
+          </div>
+        </details>
+      </aside>
+      <main class="content">
+        <header>
+          <h1 data-i18n="title">Session Archive</h1>
+          <p class="muted" data-i18n="subtitle"></p>
+        </header>
+        <div id="cards" class="cards"></div>
+        <section class="panel sessions-panel">
+          <div class="section-head">
+            <h2 data-i18n="sessionsTitle"></h2>
+            <span id="resultCount" class="muted"></span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th data-i18n="columnConversation"></th>
+                  <th data-i18n="columnKey"></th>
+                  <th data-i18n="columnModel"></th>
+                  <th data-i18n="columnRequests"></th>
+                  <th data-i18n="columnLastActivity"></th>
+                </tr>
+              </thead>
+              <tbody id="rows"></tbody>
+            </table>
+          </div>
+        </section>
+      </main>
+    </div>
+    <div id="drawer" class="drawer">
+      <div class="drawer-head">
+        <button data-i18n="close" onclick="closeDrawer()"></button
+        ><button id="download" data-i18n="exportLoaded"></button>
+      </div>
+      <h2 id="detailTitle"></h2>
+      <p id="detailMeta" class="muted"></p>
+      <div id="detail"></div>
+      <button
+        id="loadMore"
+        class="load-more"
+        data-i18n="loadMore"
+        onclick="loadSessionPage()"
+      ></button>
+    </div>
+    <div id="login" class="login">
+      <div class="panel">
+        <h2 data-i18n="connectTitle"></h2>
+        <label
+          ><span data-i18n="apiBase"></span><input id="base" value="" /></label
+        ><br />
+        <label
+          ><span data-i18n="managementKey"></span
+          ><input id="key" type="password" /></label
+        ><br />
+        <button data-i18n="login" onclick="manualLogin()"></button>
+        <p id="loginError" class="error"></p>
+        <p class="muted" data-i18n="loginHint"></p>
+      </div>
+    </div>
+    <script>
+      var messages = {
+        zh: {
+          title: "Session Archive",
+          subtitle:
+            "按项目、代码库、客户端工具、会话、模型、工具调用、认证与结果等元信息组合筛选。",
+          facetedFilter: "分面筛选",
+          facetSearchPlaceholder: "查找筛选维度，例如 project、IDE、tool…",
+          limit: "最多显示",
+          apply: "应用筛选",
+          reset: "重置",
+          columnConversation: "对话",
+          columnSession: "Session",
+          columnRequests: "请求",
+          columnModel: "模型",
+          columnKey: "Key",
+          columnLastActivity: "最后活动",
+          close: "关闭",
+          exportLoaded: "导出已加载内容",
+          loadMore: "加载更多",
+          sessionsTitle: "归档会话",
+          untitled: "未命名会话",
+          storageUsed: "实际存储占用",
+          connectTitle: "连接 CPA 管理 API",
+          apiBase: "API Base",
+          managementKey: "Management Key",
+          login: "登录",
+          loginHint:
+            "若宿主面板勾选了“记住凭证”，本页会自动复用。Manager Server 模式也可在此输入 cpamp_ 管理员 Key；凭证只保存在本页内存中。",
+          loginFailed:
+            "连接失败（HTTP {status}）。请确认 API Base 与当前面板一致，并使用当前面板的管理员 Key。",
+          records: "记录",
+          logicalContent: "逻辑内容",
+          compressed: "实际压缩",
+          saved: "累计节省",
+          all: "全部",
+          noFilters: "未设置筛选条件",
+          resultCount: "· {count} 条结果",
+          empty: "没有符合当前分面的 Session",
+          valueCount: "{count} 值",
+          dimensionCount: "{count} 个维度",
+          sessionCount: "{count} sessions",
+          request: "Request",
+          response: "Response",
+          binary: "二进制 {count} 个 Base64 字符",
+          groupProject: "项目与代码库",
+          groupClient: "客户端与运行环境",
+          groupSession: "会话标识",
+          groupRequest: "模型与请求",
+          groupContent: "工具与内容",
+          groupAuth: "认证与结果",
+          groupOther: "其他元信息",
+        },
+        en: {
+          title: "Session Archive",
+          subtitle:
+            "Combine project, repository, client, session, model, tool, authentication and outcome metadata to find archived coding sessions.",
+          facetedFilter: "Faceted filters",
+          facetSearchPlaceholder:
+            "Find a facet, such as project, IDE, or tool…",
+          limit: "Maximum rows",
+          apply: "Apply",
+          reset: "Reset",
+          columnConversation: "Conversation",
+          columnSession: "Session",
+          columnRequests: "Requests",
+          columnModel: "Model",
+          columnKey: "Key",
+          columnLastActivity: "Last activity",
+          close: "Close",
+          exportLoaded: "Export loaded records",
+          loadMore: "Load more",
+          sessionsTitle: "Archived sessions",
+          untitled: "Untitled session",
+          storageUsed: "Storage used",
+          connectTitle: "Connect to the CPA management API",
+          apiBase: "API Base",
+          managementKey: "Management Key",
+          login: "Sign in",
+          loginHint:
+            "When the host panel remembers credentials, this page reuses them automatically. In Manager Server mode, you can enter the cpamp_ admin key here; it stays in this page's memory only.",
+          loginFailed:
+            "Connection failed (HTTP {status}). Ensure API Base matches the current panel and use its current administrator key.",
+          records: "Records",
+          logicalContent: "Logical content",
+          compressed: "Compressed",
+          saved: "Saved",
+          all: "All",
+          noFilters: "No filters selected",
+          resultCount: "· {count} results",
+          empty: "No sessions match the selected facets",
+          valueCount: "{count} values",
+          dimensionCount: "{count} dimensions",
+          sessionCount: "{count} sessions",
+          request: "Request",
+          response: "Response",
+          binary: "binary data ({count} Base64 characters)",
+          groupProject: "Projects and repositories",
+          groupClient: "Clients and runtimes",
+          groupSession: "Session identifiers",
+          groupRequest: "Models and requests",
+          groupContent: "Tools and content",
+          groupAuth: "Authentication and outcomes",
+          groupOther: "Other metadata",
+        },
+      };
+      var locale = /^zh/i.test(
+        document.documentElement.lang || navigator.language,
+      )
+        ? "zh"
+        : "en";
+      function t(key, values) {
+        var text =
+          (messages[locale] && messages[locale][key]) ||
+          messages.en[key] ||
+          key;
+        Object.keys(values || {}).forEach(function (name) {
+          text = text.replace("{" + name + "}", values[name]);
+        });
+        return text;
+      }
+      function applyI18n() {
+        locale = /^zh/i.test(
+          document.documentElement.lang || navigator.language,
+        )
+          ? "zh"
+          : "en";
+        document.title = t("title");
+        document.querySelectorAll("[data-i18n]").forEach(function (node) {
+          node.textContent = t(node.dataset.i18n);
+        });
+        document
+          .querySelectorAll("[data-i18n-placeholder]")
+          .forEach(function (node) {
+            node.placeholder = t(node.dataset.i18nPlaceholder);
+          });
+        if (facets.length) renderFilters();
+      }
+
+      var session = null,
+        facets = [],
+        lastDetail = null,
+        keyAliases = {},
+        detailSessionID = "",
+        detailOffset = 0,
+        detailTotal = 0,
+        detailRecords = [];
+      var facetOrder = [
+        "project.name",
+        "workspace.name",
+        "project.path",
+        "git.remote",
+        "git.branch",
+        "client",
+        "client.name",
+        "client.ide",
+        "client.version",
+        "client.os",
+        "client.arch",
+        "originator",
+        "session.id",
+        "conversation.id",
+        "thread.id",
+        "turn.id",
+        "window.id",
+        "model.requested",
+        "model.resolved",
+        "model.target",
+        "provider.target",
+        "key.id",
+        "auth.group",
+        "outcome",
+        "status.code",
+        "source.format",
+        "request.kind",
+        "reasoning.effort",
+        "service.tier",
+        "tool.name",
+        "tool.type",
+        "content.type",
+        "message.role",
+        "stream",
+      ];
+      var facetLabelsZh = {
+        "project.name": "项目",
+        "workspace.name": "工作区",
+        "project.path": "路径",
+        "project.id": "项目 ID",
+        "workspace.id": "工作区 ID",
+        "git.remote": "Git 远端",
+        "git.branch": "分支",
+        client: "客户端",
+        "client.name": "客户端名称",
+        "client.version": "客户端版本",
+        "client.ide": "IDE",
+        "client.ide_version": "IDE 版本",
+        "client.user_agent": "User-Agent",
+        "client.os": "操作系统",
+        "client.arch": "架构",
+        originator: "调用来源",
+        "sdk.language": "SDK 语言",
+        "sdk.package_version": "SDK 版本",
+        "runtime.name": "运行时",
+        "runtime.version": "运行时版本",
+        "session.id": "Session",
+        "conversation.id": "Conversation",
+        "thread.id": "Thread",
+        "turn.id": "Turn",
+        "window.id": "窗口",
+        "model.requested": "请求模型",
+        "model.resolved": "实际模型",
+        "model.target": "目标模型",
+        "provider.target": "目标 Provider",
+        "key.id": "调用 Key",
+        "auth.group": "凭证组",
+        "auth.id": "上游凭证",
+        outcome: "结果",
+        "status.code": "HTTP 状态",
+        "source.format": "协议格式",
+        "request.kind": "请求类型",
+        "reasoning.effort": "推理档位",
+        "service.tier": "服务层",
+        "tool.name": "工具名称",
+        "tool.type": "工具类型",
+        "tool.choice": "工具选择",
+        "input.type": "输入类型",
+        "content.type": "内容类型",
+        "message.role": "消息角色",
+        stream: "流式",
+        "caller.scope": "调用范围",
+        "request.path": "API 路径",
+      };
+      var facetLabelsEn = {
+        "project.name": "Project",
+        "workspace.name": "Workspace",
+        "project.path": "Path",
+        "project.id": "Project ID",
+        "workspace.id": "Workspace ID",
+        "git.remote": "Git remote",
+        "git.branch": "Branch",
+        client: "Client",
+        "client.name": "Client name",
+        "client.version": "Client version",
+        "client.ide": "IDE",
+        "client.ide_version": "IDE version",
+        "client.user_agent": "User-Agent",
+        "client.os": "Operating system",
+        "client.arch": "Architecture",
+        originator: "Originator",
+        "sdk.language": "SDK language",
+        "sdk.package_version": "SDK version",
+        "runtime.name": "Runtime",
+        "runtime.version": "Runtime version",
+        "session.id": "Session",
+        "conversation.id": "Conversation",
+        "thread.id": "Thread",
+        "turn.id": "Turn",
+        "window.id": "Window",
+        "model.requested": "Requested model",
+        "model.resolved": "Resolved model",
+        "model.target": "Target model",
+        "provider.target": "Target provider",
+        "key.id": "Caller key",
+        "auth.group": "Credential group",
+        "auth.id": "Upstream credential",
+        outcome: "Outcome",
+        "status.code": "HTTP status",
+        "source.format": "Protocol format",
+        "request.kind": "Request kind",
+        "reasoning.effort": "Reasoning effort",
+        "service.tier": "Service tier",
+        "tool.name": "Tool name",
+        "tool.type": "Tool type",
+        "tool.choice": "Tool choice",
+        "input.type": "Input type",
+        "content.type": "Content type",
+        "message.role": "Message role",
+        stream: "Streaming",
+        "caller.scope": "Caller scope",
+        "request.path": "API path",
+      };
+      function facetLabel(name) {
+        return (
+          (locale === "zh" ? facetLabelsZh[name] : facetLabelsEn[name]) || name
+        );
+      }
+      function xor(data, key) {
+        var o = new Uint8Array(data.length);
+        for (var i = 0; i < data.length; i++)
+          o[i] = data[i] ^ key[i % key.length];
+        return o;
+      }
+      function panelAuth() {
+        try {
+          var raw = localStorage.getItem("cli-proxy-auth");
+          if (!raw) return null;
+          if (raw.indexOf("enc::v1::") === 0) {
+            var bin = atob(raw.slice(9)),
+              b = new Uint8Array(bin.length);
+            for (var i = 0; i < bin.length; i++) b[i] = bin.charCodeAt(i);
+            var kb = new TextEncoder().encode(
+              "cli-proxy-api-webui::secure-storage|" +
+                location.host +
+                "|" +
+                navigator.userAgent,
+            );
+            raw = new TextDecoder().decode(xor(b, kb));
+          }
+          var x = JSON.parse(raw),
+            s = x.state || x;
+          if (s.apiBase && s.managementKey)
+            return { base: s.apiBase.replace(/\/$/, ""), key: s.managementKey };
+        } catch (e) {}
+        return null;
+      }
+      function manualLogin() {
+        document.getElementById("loginError").textContent = "";
+        session = {
+          base: document.getElementById("base").value.replace(/\/$/, ""),
+          key: document.getElementById("key").value,
+        };
+        start();
+      }
+      async function hostApi(path) {
+        var response = await fetch(session.base + path, {
+          headers: { Authorization: "Bearer " + session.key },
+        });
+        if (!response.ok) throw Error(response.status);
+        return response.json();
+      }
+      async function api(path) {
+        return hostApi("/v0/management/plugins/cpa-session-archive" + path);
+      }
+      function keyName(value) {
+        return keyAliases[value] || (value ? value.slice(0, 12) + "…" : "—");
+      }
+      function localTime(value) {
+        var date = new Date(value);
+        return isNaN(date.getTime())
+          ? value
+          : new Intl.DateTimeFormat(undefined, {
+              dateStyle: "medium",
+              timeStyle: "short",
+            }).format(date);
+      }
+      function fmt(n) {
+        if (n < 1024) return n + " B";
+        if (n < 1048576) return (n / 1024).toFixed(1) + " KiB";
+        if (n < 1073741824) return (n / 1048576).toFixed(1) + " MiB";
+        return (n / 1073741824).toFixed(1) + " GiB";
+      }
+      async function start() {
+        try {
+          var st = await api("/stats");
+          document.getElementById("login").style.display = "none";
+          document.getElementById("cards").innerHTML = [
+            [t("storageUsed"), fmt(st.compressed_bytes)],
+            ["Session", st.sessions],
+            [t("records"), st.records],
+          ]
+            .map(function (item) {
+              return (
+                '<div class="card"><div class="muted">' +
+                item[0] +
+                '</div><div class="num">' +
+                item[1] +
+                "</div></div>"
+              );
+            })
+            .join("");
+          try {
+            var aliases = await hostApi("/v0/management/api-key-aliases");
+            (aliases.items || []).forEach(function (item) {
+              keyAliases[item.apiKeyHash || item.api_key_hash] = item.alias;
+            });
+          } catch (ignore) {}
+          facets = await api("/facets");
+          renderFilters();
+          await loadSessions();
+        } catch (e) {
+          document.getElementById("login").style.display = "grid";
+          document.getElementById("loginError").textContent = t("loginFailed", {
+            status: e && e.message ? e.message : "unknown",
+          });
+        }
+      }
+      function facetGroup(n) {
+        if (
+          /^(project|workspace|git|body\.(project|workspace|cwd|repo|repository))/.test(
+            n,
+          )
+        )
+          return ["project", t("groupProject")];
+        if (/^(client|originator|sdk|runtime|anthropic|openai)/.test(n))
+          return ["client", t("groupClient")];
+        if (/^(session|conversation|thread|turn|window|header\.)/.test(n))
+          return ["session", t("groupSession")];
+        if (/^(model|provider|source|request|reasoning|service|stream)/.test(n))
+          return ["request", t("groupRequest")];
+        if (/^(tool|input|content|message)/.test(n))
+          return ["content", t("groupContent")];
+        if (/^(key|auth|caller|outcome|status)/.test(n))
+          return ["auth", t("groupAuth")];
+        return ["other", t("groupOther")];
+      }
+      function facetRank(n) {
+        var i = facetOrder.indexOf(n);
+        return i < 0 ? 10000 : i;
+      }
+      function renderFilters() {
+        var values = {},
+          groups = {};
+        facets.forEach(function (f) {
+          (values[f.name] || (values[f.name] = [])).push(f);
+        });
+        Object.keys(values)
+          .sort(function (a, b) {
+            return facetRank(a) - facetRank(b) || a.localeCompare(b);
+          })
+          .forEach(function (n) {
+            var g = facetGroup(n),
+              entry =
+                groups[g[0]] || (groups[g[0]] = { title: g[1], names: [] });
+            entry.names.push(n);
+          });
+        var order = [
+          "project",
+          "client",
+          "session",
+          "request",
+          "content",
+          "auth",
+          "other",
+        ];
+        document.getElementById("filters").innerHTML = order
+          .filter(function (k) {
+            return groups[k];
+          })
+          .map(function (k, gi) {
+            var g = groups[k],
+              fields = g.names
+                .map(function (n) {
+                  var opts = values[n]
+                    .slice(0, 200)
+                    .map(function (x) {
+                      return (
+                        '<option value="' +
+                        esc(x.value) +
+                        '">' +
+                        esc(x.value) +
+                        " (" +
+                        t("sessionCount", { count: x.sessions }) +
+                        ")</option>"
+                      );
+                    })
+                    .join("");
+                  var title = facetLabel(n);
+                  return (
+                    '<label data-filter-name="' +
+                    esc((title + " " + n).toLowerCase()) +
+                    '"><span>' +
+                    esc(title) +
+                    ' <span class="facet-meta">' +
+                    esc(n) +
+                    " · " +
+                    t("valueCount", { count: values[n].length }) +
+                    '</span></span><select data-facet="' +
+                    esc(n) +
+                    '" onchange="updateActiveFilters()"><option value="">' +
+                    t("all") +
+                    "</option>" +
+                    opts +
+                    "</select></label>"
+                  );
+                })
+                .join("");
+            return (
+              '<details class="facet-group" ' +
+              (gi < 4 ? "open" : "") +
+              "><summary>" +
+              esc(g.title) +
+              ' <span class="facet-meta">' +
+              t("dimensionCount", { count: g.names.length }) +
+              '</span></summary><div class="facet-grid">' +
+              fields +
+              "</div></details>"
+            );
+          })
+          .join("");
+        updateActiveFilters();
+      }
+      function filterFacetNames() {
+        var q = document
+          .getElementById("facetSearch")
+          .value.trim()
+          .toLowerCase();
+        document.querySelectorAll("[data-filter-name]").forEach(function (x) {
+          x.style.display =
+            !q || x.dataset.filterName.indexOf(q) >= 0 ? "" : "none";
+        });
+        document.querySelectorAll(".facet-group").forEach(function (x) {
+          var visible = Array.from(
+            x.querySelectorAll("[data-filter-name]"),
+          ).some(function (y) {
+            return y.style.display != "none";
+          });
+          x.style.display = visible ? "" : "none";
+          if (q && visible) x.open = true;
+        });
+      }
+      function updateActiveFilters() {
+        var active = [];
+        document.querySelectorAll("[data-facet]").forEach(function (x) {
+          if (x.value)
+            active.push(
+              '<span class="chip">' +
+                esc(facetLabel(x.dataset.facet)) +
+                ": " +
+                esc(x.value) +
+                "</span>",
+            );
+        });
+        document.getElementById("activeFilters").innerHTML = active.length
+          ? active.join("")
+          : '<span class="muted">' + t("noFilters") + "</span>";
+        document.getElementById("activeCount").textContent = active.length;
+      }
+      async function loadSessions() {
+        var q = new URLSearchParams();
+        document.querySelectorAll("[data-facet]").forEach(function (node) {
+          if (node.value) q.set(node.dataset.facet, node.value);
+        });
+        q.set("limit", document.getElementById("limit").value || 100);
+        var rows = await api("/sessions?" + q);
+        document.getElementById("resultCount").textContent = t("resultCount", {
+          count: rows.length,
+        });
+        document.getElementById("rows").innerHTML = rows.length
+          ? rows
+              .map(function (row) {
+                var title = row.summary || row.project || t("untitled");
+                var meta = [row.project, row.session_id]
+                  .filter(Boolean)
+                  .join(" · ");
+                return (
+                  "<tr onclick=\"openSession('" +
+                  esc(row.session_id) +
+                  '\')"><td><div class="conversation-title" title="' +
+                  esc(title) +
+                  '">' +
+                  esc(title) +
+                  '</div><div class="conversation-meta">' +
+                  esc(meta) +
+                  '</div></td><td><span class="key-pill" title="' +
+                  esc(row.key_id || "") +
+                  '">' +
+                  esc(keyName(row.key_id)) +
+                  "</span></td><td>" +
+                  esc(row.model || "—") +
+                  "</td><td>" +
+                  row.requests +
+                  "</td><td>" +
+                  esc(localTime(row.last_at)) +
+                  "</td></tr>"
+                );
+              })
+              .join("")
+          : '<tr><td colspan="5" class="empty">' + t("empty") + "</td></tr>";
+        updateActiveFilters();
+      }
+      function resetFilters() {
+        document.querySelectorAll("[data-facet]").forEach(function (x) {
+          x.value = "";
+        });
+        document.getElementById("facetSearch").value = "";
+        filterFacetNames();
+        loadSessions();
+      }
+      async function openSession(id) {
+        detailSessionID = id;
+        detailOffset = 0;
+        detailTotal = 0;
+        detailRecords = [];
+        document.getElementById("detail").innerHTML = "";
+        document.getElementById("detailTitle").textContent = id;
+        document.getElementById("detailMeta").textContent = "";
+        document.getElementById("drawer").classList.add("open");
+        document.getElementById("download").onclick = function () {
+          var blob = new Blob([JSON.stringify(detailRecords, null, 2)], {
+              type: "application/json",
+            }),
+            link = document.createElement("a");
+          link.href = URL.createObjectURL(blob);
+          link.download = detailSessionID + "-loaded.json";
+          link.click();
+          URL.revokeObjectURL(link.href);
+        };
+        await loadSessionPage();
+      }
+      async function loadSessionPage() {
+        var button = document.getElementById("loadMore");
+        button.disabled = true;
+        var baseOffset = detailOffset;
+        var page = await api(
+          "/sessions?id=" +
+            encodeURIComponent(detailSessionID) +
+            "&limit=20&offset=" +
+            detailOffset +
+            "&preview_bytes=65536",
+        );
+        detailTotal = page.total;
+        detailRecords = detailRecords.concat(page.records || []);
+        detailOffset = detailRecords.length;
+        if (detailRecords[0]) {
+          var first = detailRecords[0];
+          document.getElementById("detailTitle").textContent =
+            first.summary ||
+            (first.facets &&
+              first.facets["project.name"] &&
+              first.facets["project.name"][0]) ||
+            t("untitled");
+          document.getElementById("detailMeta").textContent =
+            detailRecords.length +
+            " / " +
+            detailTotal +
+            " · " +
+            keyName(first.key_id) +
+            " · " +
+            localTime(first.started_at);
+        }
+        document.getElementById("detail").insertAdjacentHTML(
+          "beforeend",
+          (page.records || [])
+            .map(function (record, index) {
+              return renderRecord(record, baseOffset + index + 1);
+            })
+            .join(""),
+        );
+        button.style.display = detailOffset < detailTotal ? "block" : "none";
+        button.disabled = false;
+        lastDetail = detailRecords;
+      }
+      function renderRecord(record, number) {
+        var request = decode64(record.original_request),
+          response = decode64(record.response);
+        return (
+          '<article class="panel request-card request-preview"><div class="request-head"><b>#' +
+          number +
+          " " +
+          esc(record.requested_model || record.model) +
+          "</b><span>" +
+          esc(record.outcome) +
+          " · " +
+          record.status_code +
+          " · " +
+          esc(localTime(record.started_at)) +
+          '</span></div><div class="facet-badges">' +
+          Object.keys(record.facets || {})
+            .sort()
+            .map(function (key) {
+              return (record.facets[key] || [])
+                .map(function (value) {
+                  return (
+                    "<span>" +
+                    esc(facetLabel(key)) +
+                    ": " +
+                    esc(value) +
+                    "</span>"
+                  );
+                })
+                .join("");
+            })
+            .join("") +
+          "</div><details><summary>" +
+          t("request") +
+          " (" +
+          request.length +
+          ")</summary><pre>" +
+          esc(request.slice(0, 12000)) +
+          "</pre></details><details><summary>" +
+          t("response") +
+          " (" +
+          response.length +
+          ")</summary><pre>" +
+          esc(response.slice(0, 12000)) +
+          "</pre></details></article>"
+        );
+      }
+      function decode64(x) {
+        if (!x) return "";
+        try {
+          return new TextDecoder().decode(
+            Uint8Array.from(atob(x), function (c) {
+              return c.charCodeAt(0);
+            }),
+          );
+        } catch (e) {
+          return "[" + t("binary", { count: x.length }) + "]";
+        }
+      }
+      function closeDrawer() {
+        document.getElementById("drawer").classList.remove("open");
+      }
+      function esc(x) {
+        return String(x == null ? "" : x).replace(/[&<>"']/g, function (c) {
+          return {
+            "&": "&amp;",
+            "<": "&lt;",
+            ">": "&gt;",
+            '"': "&quot;",
+            "'": "&#39;",
+          }[c];
+        });
+      }
+      applyI18n();
+      new MutationObserver(function (mutations) {
+        if (
+          mutations.some(function (mutation) {
+            return mutation.attributeName === "lang";
+          })
+        ) {
+          applyI18n();
+          if (
+            session &&
+            document.getElementById("login").style.display === "none"
+          )
+            loadSessions();
+        }
+      }).observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: ["lang"],
+      });
+
+      var a = panelAuth();
+      if (a) {
+        session = a;
+        document.getElementById("base").value = a.base;
+        start();
+      } else {
+        document.getElementById("base").value = location.origin;
+      }
+    </script>
+  </body>
+</html>

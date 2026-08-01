@@ -33,7 +33,7 @@ func main() {
 	http.HandleFunc("/v1/sessions/", s.session)
 	http.HandleFunc("/v1/maintenance/gc", s.gc)
 	addr := env("LISTEN_ADDR", ":8080")
-	log.Printf("archive collector v0.3.1 listening on %s, db=%s, store_upstream=%v", addr, dbPath, storeUpstream)
+	log.Printf("archive collector v0.4.0 listening on %s, db=%s, store_upstream=%v", addr, dbPath, storeUpstream)
 	log.Fatal(http.ListenAndServe(addr, nil))
 }
 func env(k, d string) string {
@@ -114,11 +114,19 @@ func (s *server) session(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "session required", 400)
 		return
 	}
-	out, e := s.s.Session(r.Context(), id)
-	if e != nil {
-		http.Error(w, e.Error(), 500)
+	if r.URL.Query().Has("limit") || r.URL.Query().Has("offset") {
+		limit, offset := 20, 0
+		if v, e := strconv.Atoi(r.URL.Query().Get("limit")); e == nil && v > 0 && v <= 100 { limit = v }
+		if v, e := strconv.Atoi(r.URL.Query().Get("offset")); e == nil && v >= 0 { offset = v }
+		preview := 65536
+		if v, e := strconv.Atoi(r.URL.Query().Get("preview_bytes")); e == nil && v >= 1024 && v <= 1048576 { preview = v }
+		out, e := s.s.SessionRange(r.Context(), id, limit, offset, preview)
+		if e != nil { http.Error(w, e.Error(), 500); return }
+		writeJSON(w, out)
 		return
 	}
+	out, e := s.s.Session(r.Context(), id)
+	if e != nil { http.Error(w, e.Error(), 500); return }
 	writeJSON(w, out)
 }
 func (s *server) facets(w http.ResponseWriter,r *http.Request){out,e:=s.s.Facets(r.Context());if e!=nil{http.Error(w,e.Error(),500);return};writeJSON(w,out)}

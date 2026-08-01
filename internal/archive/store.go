@@ -28,6 +28,7 @@ type SessionSummary struct {
 	KeyID     string `json:"key_id,omitempty"`
 	Model     string `json:"model,omitempty"`
 	Project   string `json:"project,omitempty"`
+	Summary   string `json:"summary,omitempty"`
 }
 type Stats struct {
 	Records         int64 `json:"records"`
@@ -47,7 +48,7 @@ func OpenStore(path string, storeUpstream bool) (*Store, error) {
 	if _, e = db.Exec(schema); e != nil {
 		return nil, e
 	}
-	for _, q := range []string{"ALTER TABLE records ADD COLUMN original_ref TEXT", "ALTER TABLE records ADD COLUMN upstream_ref TEXT", "ALTER TABLE records ADD COLUMN response_ref TEXT", "ALTER TABLE records ADD COLUMN facets_json TEXT"} {
+	for _, q := range []string{"ALTER TABLE records ADD COLUMN original_ref TEXT", "ALTER TABLE records ADD COLUMN upstream_ref TEXT", "ALTER TABLE records ADD COLUMN response_ref TEXT", "ALTER TABLE records ADD COLUMN facets_json TEXT", "ALTER TABLE records ADD COLUMN summary TEXT"} {
 		_, _ = db.Exec(q)
 	}
 	s := &Store{DB: db, StoreUpstream: storeUpstream}
@@ -106,7 +107,7 @@ func (s *Store) PutBatch(batch []Record) error {
 		return e
 	}
 	defer tx.Rollback()
-	st, e := tx.Prepare(`INSERT INTO records(request_id,trace_id,session_id,key_id,source_format,requested_model,model,stream,outcome,status_code,error,started_at,completed_at,parent_response_id,response_id,original_ref,upstream_ref,response_ref,truncated,metadata_json,facets_json,original_request_gz,upstream_request_gz,response_gz) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,NULL,NULL) ON CONFLICT(request_id) DO UPDATE SET outcome=excluded.outcome,status_code=excluded.status_code,error=excluded.error,completed_at=excluded.completed_at,response_id=excluded.response_id,response_ref=excluded.response_ref,truncated=excluded.truncated`)
+	st, e := tx.Prepare(`INSERT INTO records(request_id,trace_id,session_id,key_id,summary,source_format,requested_model,model,stream,outcome,status_code,error,started_at,completed_at,parent_response_id,response_id,original_ref,upstream_ref,response_ref,truncated,metadata_json,facets_json,original_request_gz,upstream_request_gz,response_gz) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,NULL,NULL) ON CONFLICT(request_id) DO UPDATE SET outcome=excluded.outcome,status_code=excluded.status_code,error=excluded.error,completed_at=excluded.completed_at,response_id=excluded.response_id,response_ref=excluded.response_ref,truncated=excluded.truncated,summary=CASE WHEN COALESCE(records.summary,'')='' THEN excluded.summary ELSE records.summary END`)
 	if e != nil {
 		return e
 	}
@@ -128,7 +129,7 @@ func (s *Store) PutBatch(batch []Record) error {
 			return e
 		}
 		m, _ := json.Marshal(r.Metadata)
-		if _, e = st.Exec(r.RequestID, r.TraceID, r.SessionID, r.KeyID, r.SourceFormat, r.RequestedModel, r.Model, r.Stream, r.Outcome, r.StatusCode, r.Error, r.StartedAt.Format(time.RFC3339Nano), r.CompletedAt.Format(time.RFC3339Nano), r.ParentResponseID, r.ResponseID, orig, up, resp, r.Truncated, string(m), facetsJSON(r.Facets)); e != nil {
+		if _, e = st.Exec(r.RequestID, r.TraceID, r.SessionID, r.KeyID, r.Summary, r.SourceFormat, r.RequestedModel, r.Model, r.Stream, r.Outcome, r.StatusCode, r.Error, r.StartedAt.Format(time.RFC3339Nano), r.CompletedAt.Format(time.RFC3339Nano), r.ParentResponseID, r.ResponseID, orig, up, resp, r.Truncated, string(m), facetsJSON(r.Facets)); e != nil {
 			return e
 		}
 		if _, e = tx.Exec(`DELETE FROM record_facets WHERE request_id=?`, r.RequestID); e != nil { return e }
@@ -182,48 +183,67 @@ func (s *Store) Sessions(ctx context.Context, limit int) ([]SessionSummary, erro
 	return out, rows.Err()
 }
 
-func (s *Store) SessionsFiltered(ctx context.Context,limit int,filters map[string]string)([]SessionSummary,error){where:=[]string{};args:=[]any{};for name,value:=range filters{where=append(where,`EXISTS (SELECT 1 FROM record_facets f WHERE f.request_id=records.request_id AND f.name=? AND f.value=?)`);args=append(args,name,value)};q:=`SELECT session_id,COUNT(*),MIN(started_at),MAX(completed_at),COALESCE(MAX(key_id),''),COALESCE(MAX(requested_model),''),COALESCE((SELECT f.value FROM record_facets f JOIN records r2 ON r2.request_id=f.request_id WHERE r2.session_id=records.session_id AND f.name='project.name' LIMIT 1),'') FROM records`;if len(where)>0{q+=" WHERE "+strings.Join(where," AND ")};q+=` GROUP BY session_id ORDER BY MAX(started_at) DESC LIMIT ?`;args=append(args,limit);rows,e:=s.DB.QueryContext(ctx,q,args...);if e!=nil{return nil,e};defer rows.Close();out:=[]SessionSummary{};for rows.Next(){var x SessionSummary;if e=rows.Scan(&x.SessionID,&x.Requests,&x.FirstAt,&x.LastAt,&x.KeyID,&x.Model,&x.Project);e!=nil{return nil,e};out=append(out,x)};return out,rows.Err()}
-
-func (s *Store) Session(ctx context.Context, id string) ([]Record, error) {
-	rows, e := s.DB.QueryContext(ctx, `SELECT request_id,trace_id,COALESCE(key_id,''),COALESCE(source_format,''),COALESCE(requested_model,''),COALESCE(model,''),stream,COALESCE(outcome,''),status_code,COALESCE(error,''),started_at,completed_at,COALESCE(parent_response_id,''),COALESCE(response_id,''),COALESCE(original_ref,''),COALESCE(upstream_ref,''),COALESCE(response_ref,''),truncated,COALESCE(metadata_json,''),COALESCE(facets_json,''),original_request_gz,upstream_request_gz,response_gz FROM records WHERE session_id=? ORDER BY started_at`, id)
-	if e != nil {
-		return nil, e
+func (s *Store) SessionsFiltered(ctx context.Context, limit int, filters map[string]string) ([]SessionSummary, error) {
+	where := []string{}
+	args := []any{}
+	for name, value := range filters {
+		where = append(where, `EXISTS (SELECT 1 FROM record_facets f WHERE f.request_id=records.request_id AND f.name=? AND f.value=?)`)
+		args = append(args, name, value)
 	}
+	q := `SELECT session_id,COUNT(*),MIN(started_at),MAX(completed_at),COALESCE(MAX(NULLIF(key_id,'')),(SELECT fkey.value FROM record_facets fkey JOIN records rk ON rk.request_id=fkey.request_id WHERE rk.session_id=records.session_id AND fkey.name='caller.scope' LIMIT 1),''),COALESCE(MAX(requested_model),''),COALESCE((SELECT f.value FROM record_facets f JOIN records r2 ON r2.request_id=f.request_id WHERE r2.session_id=records.session_id AND f.name='project.name' LIMIT 1),''),COALESCE((SELECT r3.summary FROM records r3 WHERE r3.session_id=records.session_id AND COALESCE(r3.summary,'')<>'' ORDER BY r3.started_at LIMIT 1),'') FROM records`
+	if len(where) > 0 { q += " WHERE " + strings.Join(where, " AND ") }
+	q += ` GROUP BY session_id ORDER BY MAX(started_at) DESC LIMIT ?`
+	args = append(args, limit)
+	rows, e := s.DB.QueryContext(ctx, q, args...)
+	if e != nil { return nil, e }
 	defer rows.Close()
-	out := []Record{}
+	out := []SessionSummary{}
+	for rows.Next() {
+		var x SessionSummary
+		if e = rows.Scan(&x.SessionID, &x.Requests, &x.FirstAt, &x.LastAt, &x.KeyID, &x.Model, &x.Project, &x.Summary); e != nil { return nil, e }
+		out = append(out, x)
+	}
+	return out, rows.Err()
+}
+
+type SessionPage struct {
+	Records []Record `json:"records"`
+	Total int `json:"total"`
+	Limit int `json:"limit"`
+	Offset int `json:"offset"`
+}
+
+func (s *Store) SessionRange(ctx context.Context, id string, limit, offset, previewBytes int) (SessionPage, error) {
+	out := SessionPage{Records: []Record{}, Limit: limit, Offset: offset}
+	if e := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM records WHERE session_id=?`, id).Scan(&out.Total); e != nil { return out, e }
+	rows, e := s.DB.QueryContext(ctx, `SELECT request_id,trace_id,COALESCE(key_id,''),COALESCE(summary,''),COALESCE(source_format,''),COALESCE(requested_model,''),COALESCE(model,''),stream,COALESCE(outcome,''),status_code,COALESCE(error,''),started_at,completed_at,COALESCE(parent_response_id,''),COALESCE(response_id,''),COALESCE(original_ref,''),COALESCE(upstream_ref,''),COALESCE(response_ref,''),truncated,COALESCE(metadata_json,''),COALESCE(facets_json,''),original_request_gz,upstream_request_gz,response_gz FROM records WHERE session_id=? ORDER BY started_at LIMIT ? OFFSET ?`, id, limit, offset)
+	if e != nil { return out, e }
+	defer rows.Close()
 	for rows.Next() {
 		var x Record
 		var stream, trunc int
 		var started, done, meta, facets, or, ur, rr string
 		var oldO, oldU, oldR []byte
 		x.SessionID = id
-		if e = rows.Scan(&x.RequestID, &x.TraceID, &x.KeyID, &x.SourceFormat, &x.RequestedModel, &x.Model, &stream, &x.Outcome, &x.StatusCode, &x.Error, &started, &done, &x.ParentResponseID, &x.ResponseID, &or, &ur, &rr, &trunc, &meta, &facets, &oldO, &oldU, &oldR); e != nil {
-			return nil, e
+		if e = rows.Scan(&x.RequestID, &x.TraceID, &x.KeyID, &x.Summary, &x.SourceFormat, &x.RequestedModel, &x.Model, &stream, &x.Outcome, &x.StatusCode, &x.Error, &started, &done, &x.ParentResponseID, &x.ResponseID, &or, &ur, &rr, &trunc, &meta, &facets, &oldO, &oldU, &oldR); e != nil { return out, e }
+		x.Stream = stream != 0; x.Truncated = trunc != 0
+		x.StartedAt, _ = time.Parse(time.RFC3339Nano, started); x.CompletedAt, _ = time.Parse(time.RFC3339Nano, done)
+		if or != "" { x.OriginalRequest, _ = s.LoadPayload(or) } else { x.OriginalRequest = gunzipBytes(oldO) }
+		if ur != "" { x.UpstreamRequest, _ = s.LoadPayload(ur) } else if s.StoreUpstream { x.UpstreamRequest = gunzipBytes(oldU) }
+		if rr != "" { x.Response, _ = s.LoadPayload(rr) } else { x.Response = gunzipBytes(oldR) }
+		_ = json.Unmarshal([]byte(meta), &x.Metadata); _ = json.Unmarshal([]byte(facets), &x.Facets)
+		if previewBytes > 0 {
+			if len(x.OriginalRequest) > previewBytes { x.OriginalRequest = x.OriginalRequest[:previewBytes]; x.Truncated = true }
+			if len(x.Response) > previewBytes { x.Response = x.Response[:previewBytes]; x.Truncated = true }
+			x.UpstreamRequest = nil
 		}
-		x.Stream = stream != 0
-		x.Truncated = trunc != 0
-		x.StartedAt, _ = time.Parse(time.RFC3339Nano, started)
-		x.CompletedAt, _ = time.Parse(time.RFC3339Nano, done)
-		if or != "" {
-			x.OriginalRequest, _ = s.LoadPayload(or)
-		} else {
-			x.OriginalRequest = gunzipBytes(oldO)
-		}
-		if ur != "" {
-			x.UpstreamRequest, _ = s.LoadPayload(ur)
-		} else if s.StoreUpstream {
-			x.UpstreamRequest = gunzipBytes(oldU)
-		}
-		if rr != "" {
-			x.Response, _ = s.LoadPayload(rr)
-		} else {
-			x.Response = gunzipBytes(oldR)
-		}
-		_ = json.Unmarshal([]byte(meta), &x.Metadata)
-		_ = json.Unmarshal([]byte(facets), &x.Facets)
-		out = append(out, x)
+		out.Records = append(out.Records, x)
 	}
 	return out, rows.Err()
+}
+func (s *Store) Session(ctx context.Context, id string) ([]Record, error) {
+	page, e := s.SessionRange(ctx, id, 1000000, 0, 0)
+	return page.Records, e
 }
 func (s *Store) Stats(ctx context.Context) (Stats, error) {
 	var x Stats

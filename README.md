@@ -29,7 +29,7 @@ The request path never waits for disk I/O. A full queue, unavailable collector o
 ## Build
 
 ~~~bash
-docker build -t cpa-session-archive:0.3.1 .
+docker build -t cpa-session-archive:0.4.0 .
 ~~~
 
 The image contains both /plugin/cpa-session-archive.so and the collector executable.
@@ -67,7 +67,7 @@ Endpoints:
 
 ## Management UI and faceted search
 
-With CPA management API support enabled, CPA-Manager-Plus shows a **Session Archive** plugin page. The page provides storage statistics, dynamic facet selectors, a session table, request/response previews, and JSON export.
+With CPA management API support enabled, CPA-Manager-Plus shows a **Session Archive** plugin page. The page provides storage statistics, dynamic facet selectors, a session table, request/response previews, and JSON export. Its maintainable embedded HTML/CSS/JavaScript source follows the host panel language and currently includes complete Simplified Chinese and English translations.
 
 Facets are intentionally client-agnostic. The collector indexes metadata when present for:
 
