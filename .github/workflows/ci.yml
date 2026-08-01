@@ -1,0 +1,18 @@
+name: ci
+on:
+  push:
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24.x"
+          cache: true
+      - run: sudo apt-get update && sudo apt-get install -y gcc libc6-dev
+      - run: go test ./...
+      - run: CGO_ENABLED=1 go build -tags cshared -buildmode=c-shared -o /tmp/cpa-session-archive.so ./cmd/cpa-session-archive
+      - run: CGO_ENABLED=1 go build -o /tmp/cpa-session-collector ./cmd/cpa-session-collector
+      - run: docker build -t cpa-session-archive:test .

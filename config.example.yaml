@@ -1,0 +1,6 @@
+enabled: true
+endpoint: http://cpa-session-collector:8080
+queue_size: 2048
+max_body_bytes: 67108864
+timeout: 5s
+store_upstream_request: false
