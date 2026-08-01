@@ -12,12 +12,14 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 	"io"
 	"log"
+	"os"
 	"strings"
 	"time"
 )
 
 type Store struct {
 	DB            *sql.DB
+	DBPath        string
 	StoreUpstream bool
 }
 type SessionSummary struct {
@@ -51,8 +53,7 @@ func OpenStore(path string, storeUpstream bool) (*Store, error) {
 	for _, q := range []string{"ALTER TABLE records ADD COLUMN original_ref TEXT", "ALTER TABLE records ADD COLUMN upstream_ref TEXT", "ALTER TABLE records ADD COLUMN response_ref TEXT", "ALTER TABLE records ADD COLUMN facets_json TEXT", "ALTER TABLE records ADD COLUMN summary TEXT"} {
 		_, _ = db.Exec(q)
 	}
-	s := &Store{DB: db, StoreUpstream: storeUpstream}
-	go s.MigrateLegacy()
+	s := &Store{DB: db, DBPath: path, StoreUpstream: storeUpstream}
 	return s, nil
 }
 func gzipBytes(b []byte) []byte {
@@ -248,11 +249,20 @@ func (s *Store) Session(ctx context.Context, id string) ([]Record, error) {
 func (s *Store) Stats(ctx context.Context) (Stats, error) {
 	var x Stats
 	_ = s.DB.QueryRowContext(ctx, `SELECT COUNT(*),COUNT(DISTINCT session_id) FROM records`).Scan(&x.Records, &x.Sessions)
-	_ = s.DB.QueryRowContext(ctx, `SELECT COUNT(*),COALESCE(SUM(raw_size),0),COALESCE(SUM(LENGTH(data)),0) FROM blobs`).Scan(&x.Blobs, &x.LogicalBytes, &x.CompressedBytes)
-	var referenced int64
-	_ = s.DB.QueryRowContext(ctx, `SELECT COALESCE(SUM(COALESCE(LENGTH(original_request_gz),0)+COALESCE(LENGTH(upstream_request_gz),0)+COALESCE(LENGTH(response_gz),0)),0) FROM records`).Scan(&referenced)
-	x.SavedBytes = referenced + x.LogicalBytes - x.CompressedBytes
+	_ = s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM blobs`).Scan(&x.Blobs)
+	// Report the storage a user can act on. SUM(LENGTH(data)) scans every large
+	// blob and can block the management page for minutes while legacy rows are
+	// being migrated. File metadata is O(1) and includes SQLite WAL usage.
+	x.CompressedBytes = fileSize(s.DBPath) + fileSize(s.DBPath+"-wal") + fileSize(s.DBPath+"-shm")
 	return x, nil
+}
+
+func fileSize(path string) int64 {
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0
+	}
+	return info.Size()
 }
 func (s *Store) MigrateLegacy() {
 	for {

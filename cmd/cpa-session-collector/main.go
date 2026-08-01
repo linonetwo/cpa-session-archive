@@ -23,6 +23,9 @@ func main() {
 	if e != nil {
 		log.Fatal(e)
 	}
+	if env("ARCHIVE_MIGRATE_LEGACY", "false") == "true" {
+		go st.MigrateLegacy()
+	}
 	s := &server{s: st, q: make(chan archive.Record, 4096)}
 	go s.writer()
 	http.HandleFunc("/healthz", s.health)
