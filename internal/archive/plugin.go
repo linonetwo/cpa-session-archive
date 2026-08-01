@@ -138,7 +138,7 @@ func (p *Plugin) configure(raw []byte) ([]byte, error) {
 		p.wg.Add(1)
 		go p.sender()
 	}
-	reg := map[string]any{"schema_version": 2, "metadata": map[string]any{"Name": "cpa-session-archive", "Version": "0.3.1", "Author": "OneTwo", "GitHubRepository": "https://github.com/linonetwo/cpa-session-archive", "ConfigFields": []any{}}, "capabilities": map[string]any{"request_interceptor": true, "request_lifecycle_plugin": true, "response_interceptor": true, "response_stream_interceptor": true, "management_api": true}}
+	reg := map[string]any{"schema_version": 2, "metadata": map[string]any{"Name": "cpa-session-archive", "Version": "0.4.0", "Author": "OneTwo", "GitHubRepository": "https://github.com/linonetwo/cpa-session-archive", "ConfigFields": []any{}}, "capabilities": map[string]any{"request_interceptor": true, "request_lifecycle_plugin": true, "response_interceptor": true, "response_stream_interceptor": true, "management_api": true}}
 	return ok(reg)
 }
 func (p *Plugin) captureRequest(r intercept, afterAuth bool) {
@@ -171,10 +171,11 @@ func (p *Plugin) captureRequest(r intercept, afterAuth bool) {
 			s.OriginalRequest = limit(r.Body, p.max, &s.Truncated)
 		}
 		enrichGenericFacets(&s.Record, r.Headers, r.Body)
+		if s.Summary == "" { s.Summary = extractConversationSummary(r.Body) }
 	}
 	s.SessionID = sessionID(r.Metadata, s.OriginalRequest, s.UpstreamRequest)
 	s.ParentResponseID = firstJSON(s.OriginalRequest, s.UpstreamRequest, "previous_response_id")
-	s.KeyID = findString(r.Metadata, "key_id", "principal")
+	s.KeyID = firstNonEmpty(findString(r.Metadata, "key_name", "key_alias", "principal_name", "key_id", "principal"), findString(r.Metadata, "caller_scope"))
 }
 func (p *Plugin) captureResponse(r intercept) {
 	p.mu.Lock()
@@ -370,6 +371,42 @@ func enrichDesktopMetadata(rec *Record, h http.Header) {
  if json.Unmarshal([]byte(raw), &meta) != nil { return }
  rec.ThreadID = firstNonEmpty(meta.ThreadID, rec.ThreadID); rec.TurnID=meta.TurnID; rec.WindowID=firstNonEmpty(meta.WindowID,rec.WindowID); rec.RequestKind=meta.RequestKind
  paths:=make([]string,0,len(meta.Workspaces));for p:=range meta.Workspaces{paths=append(paths,p)};sort.Strings(paths);if len(paths)>0{rec.ProjectPath=paths[0];rec.ProjectName=filepath.Base(strings.ReplaceAll(paths[0],"\\","/"));rem:=meta.Workspaces[paths[0]].AssociatedRemoteURLs;for _,k:=range []string{"origin","forgejo","github","llm"}{if rem[k]!=""{rec.GitRemote=rem[k];break}}}
+}
+func extractConversationSummary(body []byte) string {
+	for _, path := range []string{"title", "conversation.title", "metadata.title", "client_metadata.title"} {
+		if value := compactSummary(gjson.GetBytes(body, path).String()); value != "" { return value }
+	}
+	var root any
+	if json.Unmarshal(body, &root) != nil { return "" }
+	var walk func(any, bool) string
+	walk = func(value any, user bool) string {
+		switch item := value.(type) {
+		case map[string]any:
+			role, _ := item["role"].(string)
+			isUser := user || strings.EqualFold(role, "user")
+			if isUser {
+				for _, key := range []string{"text", "prompt", "content", "input"} {
+					if found := walk(item[key], true); found != "" { return found }
+				}
+			}
+			for _, key := range []string{"input", "messages", "content"} {
+				if found := walk(item[key], isUser); found != "" { return found }
+			}
+		case []any:
+			for _, child := range item { if found := walk(child, user); found != "" { return found } }
+		case string:
+			if user { return compactSummary(item) }
+		}
+		return ""
+	}
+	return walk(root, false)
+}
+func compactSummary(value string) string {
+	value = strings.Join(strings.Fields(value), " ")
+	if value == "" { return "" }
+	runes := []rune(value)
+	if len(runes) > 160 { return string(runes[:160]) + "…" }
+	return value
 }
 func enrichGenericFacets(rec *Record, h http.Header, body []byte) {
 	if rec.Facets == nil {
