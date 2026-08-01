@@ -387,15 +387,18 @@ func enrichGenericFacets(rec *Record, h http.Header, body []byte) {
 		}
 		rec.Facets[k] = append(rec.Facets[k], v)
 	}
-	addPathValues := func(name, query string) {
-		r := gjson.GetBytes(body, query)
-		if r.IsArray() {
-			for _, item := range r.Array() {
-				addFacet(name, item.String())
+	var addResult func(string, gjson.Result)
+	addResult = func(name string, result gjson.Result) {
+		if result.IsArray() {
+			for _, item := range result.Array() {
+				addResult(name, item)
 			}
 			return
 		}
-		addFacet(name, r.String())
+		addFacet(name, result.String())
+	}
+	addPathValues := func(name, query string) {
+		addResult(name, gjson.GetBytes(body, query))
 	}
 	for _, pair := range [][2]string{
 		{"client", rec.Client}, {"client.user_agent", h.Get("User-Agent")},
