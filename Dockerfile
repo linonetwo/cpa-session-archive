@@ -1,6 +1,8 @@
 ARG GO_IMAGE=golang:1.24-bookworm
 ARG RUNTIME_IMAGE=debian:bookworm-slim
 FROM ${GO_IMAGE} AS build
+ARG GOPROXY=https://proxy.golang.org,direct
+ENV GOPROXY=${GOPROXY}
 RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY go.mod go.sum ./
