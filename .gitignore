@@ -2,4 +2,4 @@
 *.sqlite-shm
 *.sqlite-wal
 *.so
-cpa-session-collector
+/cpa-session-collector
