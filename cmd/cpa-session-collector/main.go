@@ -2,20 +2,30 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"log"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"cpa-session-archive/internal/archive"
 )
 
 type server struct {
-	s *archive.Store
-	q chan archive.Record
+	s        *archive.Store
+	q        chan archive.Record
+	ticketMu sync.Mutex
+	tickets  map[string]exportTicket
+}
+
+type exportTicket struct {
+	SessionID string
+	ExpiresAt time.Time
 }
 
 func main() {
@@ -72,7 +82,7 @@ func main() {
 			}
 		}
 	}()
-	s := &server{s: st, q: make(chan archive.Record, 4096)}
+	s := &server{s: st, q: make(chan archive.Record, 4096), tickets: map[string]exportTicket{}}
 	go s.writer()
 	http.HandleFunc("/healthz", s.health)
 	http.HandleFunc("/ingest", s.ingest)
@@ -81,9 +91,11 @@ func main() {
 	http.HandleFunc("/v1/sessions", s.sessions)
 	http.HandleFunc("/v1/sessions/", s.session)
 	http.HandleFunc("/v1/requests/", s.request)
+	http.HandleFunc("/v1/export-tickets", s.exportTicket)
+	http.HandleFunc("/archive-api/v1/exports/", s.ticketedExport)
 	http.HandleFunc("/v1/maintenance/gc", s.gc)
 	addr := env("LISTEN_ADDR", ":8080")
-	log.Printf("archive collector v0.5.0 listening on %s, db=%s, store_upstream=%v", addr, dbPath, storeUpstream)
+	log.Printf("archive collector v0.5.1 listening on %s, db=%s, store_upstream=%v", addr, dbPath, storeUpstream)
 	log.Fatal(http.ListenAndServe(addr, nil))
 }
 func env(k, d string) string {
@@ -260,6 +272,58 @@ func (s *server) request(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, out)
+}
+func (s *server) exportTicket(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method", 405)
+		return
+	}
+	sessionID := strings.TrimSpace(r.URL.Query().Get("session_id"))
+	if sessionID == "" {
+		http.Error(w, "session required", 400)
+		return
+	}
+	var exists int
+	if err := s.s.DB.QueryRowContext(r.Context(), `SELECT 1 FROM records WHERE session_id=? LIMIT 1`, sessionID).Scan(&exists); err != nil {
+		http.Error(w, "session not found", 404)
+		return
+	}
+	random := make([]byte, 32)
+	if _, err := rand.Read(random); err != nil {
+		http.Error(w, "ticket unavailable", 500)
+		return
+	}
+	token := hex.EncodeToString(random)
+	s.ticketMu.Lock()
+	now := time.Now()
+	for key, item := range s.tickets {
+		if now.After(item.ExpiresAt) {
+			delete(s.tickets, key)
+		}
+	}
+	s.tickets[token] = exportTicket{SessionID: sessionID, ExpiresAt: now.Add(5 * time.Minute)}
+	s.ticketMu.Unlock()
+	writeJSON(w, map[string]any{"url": "/archive-api/v1/exports/" + token, "expires_at": now.Add(5 * time.Minute)})
+}
+func (s *server) ticketedExport(w http.ResponseWriter, r *http.Request) {
+	token := strings.TrimPrefix(r.URL.Path, "/archive-api/v1/exports/")
+	s.ticketMu.Lock()
+	ticket, ok := s.tickets[token]
+	if ok {
+		delete(s.tickets, token)
+	}
+	s.ticketMu.Unlock()
+	if !ok || time.Now().After(ticket.ExpiresAt) {
+		http.Error(w, "invalid or expired export ticket", 404)
+		return
+	}
+	w.Header().Set("Content-Type", "application/x-ndjson; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="session-`+safeFilename(ticket.SessionID)+`.jsonl"`)
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	if e := s.s.ExportSessionJSONL(r.Context(), ticket.SessionID, w); e != nil {
+		log.Printf("ticketed session export failed id=%s: %v", ticket.SessionID, e)
+	}
 }
 func safeFilename(v string) string {
 	var b strings.Builder

@@ -507,7 +507,7 @@
           loadingSessions: "正在查询会话列表…",
           loadingSession: "正在查询 Session 请求索引…",
           loadingRequest: "正在按需加载完整请求、响应和工具结果…",
-          loadingExport: "正在由后端流式生成完整 Session…",
+          loadingExport: "正在申请一次性流式下载票据…",
           loadMore: "加载更多",
           sessionsTitle: "归档会话",
           untitled: "未命名会话",
@@ -578,7 +578,7 @@
           loadingSessions: "Querying session list…",
           loadingSession: "Querying the session request index…",
           loadingRequest: "Loading the full request, response and tool results on demand…",
-          loadingExport: "The backend is streaming the complete session…",
+          loadingExport: "Requesting a one-time streaming download ticket…",
           loadMore: "Load more",
           sessionsTitle: "Archived sessions",
           untitled: "Untitled session",
@@ -1229,8 +1229,8 @@
         try {
           var response = await fetch(session.base + "/v0/management/plugins/cpa-session-archive/export?id=" + encodeURIComponent(detailSessionID), { headers: { Authorization: "Bearer " + session.key } });
           if (!response.ok) throw Error(response.status);
-          var blob = await response.blob(), link = document.createElement("a");
-          link.href = URL.createObjectURL(blob); link.download = "session-" + detailSessionID + ".jsonl"; link.click(); URL.revokeObjectURL(link.href);
+          var ticket = await response.json(), link = document.createElement("a");
+          link.href = new URL(ticket.url, location.origin).href; link.download = "session-" + detailSessionID + ".jsonl"; document.body.appendChild(link); link.click(); link.remove();
         } finally { hideLoading(); }
       }
       function renderRecord(record, number) {

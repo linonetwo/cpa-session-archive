@@ -67,7 +67,7 @@ func (p *Plugin) handleManagement(raw []byte) ([]byte, error) {
 		target = "/v1/requests/" + url.PathEscape(r.Query.Get("id"))
 		drop["id"] = true
 	case r.Method == http.MethodGet && path == base+"/export":
-		target = "/v1/sessions/" + url.PathEscape(r.Query.Get("id")) + "/export"
+		target = "/v1/export-tickets?session_id=" + url.QueryEscape(r.Query.Get("id"))
 		drop["id"] = true
 	default:
 		return ok(managementResponse{StatusCode: 404, Body: []byte("{\"error\":\"not found\"}")})

@@ -28,4 +28,7 @@ func TestManagementUIContainsBilingualFacetedExperience(t *testing.T) {
 			t.Errorf("management UI contains credential-like literal %q", forbidden)
 		}
 	}
+	if bytes.Contains(managementHTML, []byte("response.blob()")) {
+		t.Error("complete exports must not be buffered in the browser")
+	}
 }
