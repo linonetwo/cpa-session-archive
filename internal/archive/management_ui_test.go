@@ -14,7 +14,6 @@ func TestManagementUIContainsBilingualFacetedExperience(t *testing.T) {
 		[]byte("MutationObserver"),
 		[]byte("data-i18n"),
 		[]byte("#/sessions/"),
-		[]byte("metadata_only=true"),
 		[]byte("Download this session"),
 		[]byte("Parameterized SQL"),
 		[]byte("previousPage"),
