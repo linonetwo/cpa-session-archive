@@ -106,11 +106,12 @@ func main() {
 	http.HandleFunc("/v1/requests/", s.request)
 	http.HandleFunc("/v1/request-context", s.requestContext)
 	http.HandleFunc("/v1/request-view", s.requestView)
+	http.HandleFunc("/v1/turns", s.turns)
 	http.HandleFunc("/v1/export-tickets", s.exportTicket)
 	http.HandleFunc("/archive-api/v1/exports/", s.ticketedExport)
 	http.HandleFunc("/v1/maintenance/gc", s.gc)
 	addr := env("LISTEN_ADDR", ":8080")
-	log.Printf("archive collector v0.7.2 listening on %s, db=%s, store_upstream=%v", addr, dbPath, storeUpstream)
+	log.Printf("archive collector v0.7.3 listening on %s, db=%s, store_upstream=%v", addr, dbPath, storeUpstream)
 	log.Fatal(http.ListenAndServe(addr, nil))
 }
 func env(k, d string) string {
@@ -327,6 +328,40 @@ func (s *server) requestView(w http.ResponseWriter, r *http.Request) {
 		} else {
 			http.Error(w, e.Error(), 500)
 		}
+		return
+	}
+	writeJSON(w, out)
+}
+func (s *server) turns(w http.ResponseWriter, r *http.Request) {
+	sessionID := strings.TrimSpace(r.URL.Query().Get("session_id"))
+	if sessionID == "" {
+		http.Error(w, "session required", 400)
+		return
+	}
+	limit, offset := 20, 0
+	if value, parseErr := strconv.Atoi(r.URL.Query().Get("limit")); parseErr == nil && value > 0 && value <= 100 {
+		limit = value
+	}
+	if value, parseErr := strconv.Atoi(r.URL.Query().Get("offset")); parseErr == nil && value >= 0 {
+		offset = value
+	}
+	turnID := strings.TrimSpace(r.URL.Query().Get("turn_id"))
+	if turnID != "" {
+		out, err := s.s.SessionTurnDetail(r.Context(), sessionID, turnID, limit, offset)
+		if err != nil {
+			if strings.Contains(strings.ToLower(err.Error()), "not found") {
+				http.Error(w, "not found", 404)
+			} else {
+				http.Error(w, err.Error(), 500)
+			}
+			return
+		}
+		writeJSON(w, out)
+		return
+	}
+	out, err := s.s.SessionTurnPage(r.Context(), sessionID, limit, offset, r.URL.Query().Get("order"))
+	if err != nil {
+		http.Error(w, err.Error(), 500)
 		return
 	}
 	writeJSON(w, out)

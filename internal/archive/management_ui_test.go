@@ -35,7 +35,10 @@ func TestManagementUIContainsBilingualFacetedExperience(t *testing.T) {
 		[]byte("var displayTitle = duplicate"),
 		[]byte("event.key==='Enter'"),
 		[]byte("thread_sources"),
-		[]byte("sessionHasCompaction"),
+		[]byte("/turns?session_id="),
+		[]byte("renderTurnProcess"),
+		[]byte("openTurnTool"),
+		[]byte("backToTurn"),
 	}
 	for _, check := range checks {
 		if !bytes.Contains(managementHTML, check) {

@@ -125,6 +125,76 @@
         border-color: #7aa7e8;
         box-shadow: 0 2px 8px #1769e018;
       }
+      .turn-card {
+        display: grid;
+        gap: 12px;
+        margin: 12px 0;
+        cursor: pointer;
+      }
+      .turn-card:hover {
+        border-color: #7aa7e8;
+        box-shadow: 0 2px 8px #1769e018;
+      }
+      .turn-primary {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+        gap: 14px;
+      }
+      .turn-primary > section {
+        min-width: 0;
+      }
+      .turn-primary h3 {
+        margin: 0 0 7px;
+        font-size: 13px;
+        color: #52606d;
+      }
+      .turn-text {
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        line-height: 1.55;
+        max-height: 13em;
+        overflow: hidden;
+      }
+      .turn-final {
+        border-left: 4px solid #10b981;
+        padding-left: 12px;
+      }
+      .process-step {
+        border: 1px solid #d9e1ea;
+        border-radius: 10px;
+        background: #fff;
+        margin: 10px 0;
+        overflow: hidden;
+      }
+      .process-step > summary {
+        cursor: pointer;
+        padding: 11px 13px;
+        font-weight: 650;
+        background: #f8fafc;
+      }
+      .process-step-body {
+        padding: 12px;
+        display: grid;
+        gap: 9px;
+      }
+      .tool-summary {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        border: 1px solid #fde68a;
+        background: #fffbeb;
+        border-radius: 8px;
+        padding: 9px 11px;
+      }
+      .tool-summary button {
+        flex: none;
+      }
+      @media (max-width: 800px) {
+        .turn-primary {
+          grid-template-columns: 1fr;
+        }
+      }
       .loading-overlay {
         display: none;
         position: fixed;
@@ -766,13 +836,38 @@
         </nav>
       </div>
     </div>
-    <div id="requestView" class="route-page">
+    <div id="turnView" class="route-page">
       <div class="route-shell">
         <div class="drawer-head">
           <button
             class="back-button"
             data-i18n="backToSession"
             onclick="goSession()"
+          ></button>
+        </div>
+        <h2 id="turnTitle"></h2>
+        <p id="turnMeta" class="muted"></p>
+        <div id="turnPrimary" class="panel turn-primary"></div>
+        <h3 data-i18n="turnProcess"></h3>
+        <p class="muted" data-i18n="turnProcessHint"></p>
+        <div id="turnProcess"></div>
+        <nav id="turnPagination" class="pagination">
+          <button
+            data-i18n="previousPage"
+            onclick="changeTurnPage(-1)"
+          ></button>
+          <strong id="turnPageInfo"></strong>
+          <button data-i18n="nextPage" onclick="changeTurnPage(1)"></button>
+        </nav>
+      </div>
+    </div>
+    <div id="requestView" class="route-page">
+      <div class="route-shell">
+        <div class="drawer-head">
+          <button
+            class="back-button"
+            data-i18n="backToTurn"
+            onclick="goParentFromRequest()"
           ></button>
         </div>
         <h2 id="requestTitle"></h2>
@@ -847,6 +942,8 @@
           executingQuery: "正在执行的参数化 SQL（敏感值未展开）",
           loadingSessions: "正在查询会话列表…",
           loadingSession: "正在查询 Session 请求索引…",
+          loadingTurns: "正在按用户回合整理对话…",
+          loadingTurn: "正在按需加载本回合的中间过程…",
           loadingRequest: "正在按需加载完整请求、响应和工具结果…",
           loadingExport: "正在准备可重复下载的流式链接…",
           firstPage: "首页",
@@ -867,6 +964,7 @@
           loginFailed:
             "连接失败（HTTP {status}）。请确认 API Base 与当前面板一致，并使用当前面板的管理员 Key。",
           records: "记录",
+          turnsLabel: "个用户回合",
           logicalContent: "逻辑内容",
           compressed: "实际压缩",
           saved: "累计节省",
@@ -913,6 +1011,19 @@
             "尚未在本次请求中找到对应结果；结果可能出现在下一次请求。",
           userPreview: "用户请求",
           assistantPreview: "助手响应",
+          userCommand: "用户命令",
+          finalAnswer: "最终回复",
+          backToTurn: "返回本轮对话",
+          noFinalAnswer:
+            "尚未记录到最终自然语言回复，可能仍在执行或以工具调用结束。",
+          openTurn: "查看中间过程",
+          turnProcess: "中间过程",
+          turnProcessHint:
+            "逐项展开可查看模型的中间说明、压缩节点和工具调用摘要；工具完整参数与结果位于更深一层。",
+          turnSummary: "{requests} 个内部请求 · {tools} 类工具",
+          processStep: "过程 {number}",
+          compactionMarker: "上下文压缩节点",
+          toolSummary: "工具调用",
           noReadableContent: "没有可直接阅读的文本内容",
           attachment: "多媒体附件",
           expandFull: "展开完整内容",
@@ -925,7 +1036,6 @@
           kindContextRebuild: "压缩后的上下文重建",
           kindToolContinuation: "工具结果续传",
           kindPrewarm: "后台预热",
-          sessionHasCompaction: "包含压缩",
           systemTask: "系统任务",
           historyItemsFolded:
             "已折叠 {count} 项历史上下文；本页只展示相对上一请求新增的内容。",
@@ -965,6 +1075,8 @@
             "Parameterized SQL in progress (sensitive values omitted)",
           loadingSessions: "Querying session list…",
           loadingSession: "Querying the session request index…",
+          loadingTurns: "Grouping the conversation into user turns…",
+          loadingTurn: "Loading this turn's intermediate process on demand…",
           loadingRequest:
             "Loading the full request, response and tool results on demand…",
           loadingExport: "Preparing a reusable streaming download link…",
@@ -986,6 +1098,7 @@
           loginFailed:
             "Connection failed (HTTP {status}). Ensure API Base matches the current panel and use its current administrator key.",
           records: "Records",
+          turnsLabel: "user turns",
           logicalContent: "Logical content",
           compressed: "Compressed",
           saved: "Saved",
@@ -1032,6 +1145,19 @@
             "No matching result was found in this request; it may appear in the next request.",
           userPreview: "User request",
           assistantPreview: "Assistant response",
+          userCommand: "User command",
+          finalAnswer: "Final response",
+          backToTurn: "Back to this turn",
+          noFinalAnswer:
+            "No final natural-language response has been recorded yet; the turn may still be running or may have ended with a tool call.",
+          openTurn: "View intermediate process",
+          turnProcess: "Intermediate process",
+          turnProcessHint:
+            "Expand a step to inspect intermediate explanations, compaction markers and tool summaries. Complete tool inputs and outputs remain one level deeper.",
+          turnSummary: "{requests} internal requests · {tools} tool types",
+          processStep: "Step {number}",
+          compactionMarker: "Context compaction point",
+          toolSummary: "Tool call",
           noReadableContent: "No directly readable text content",
           attachment: "Media attachment",
           expandFull: "Expand full content",
@@ -1044,7 +1170,6 @@
           kindContextRebuild: "Context rebuilt after compaction",
           kindToolContinuation: "Tool result continuation",
           kindPrewarm: "Background prewarm",
-          sessionHasCompaction: "Contains compaction",
           systemTask: "System task",
           historyItemsFolded:
             "{count} historical context items were folded. This page shows only content added since the previous request.",
@@ -1097,6 +1222,10 @@
         detailPageSize = 20,
         detailTotal = 0,
         detailRecords = [],
+        currentTurnID = "",
+        turnProcessPage = 1,
+        turnProcessPageSize = 20,
+        turnProcessTotal = 0,
         currentRequestID = "",
         currentRequestRecord = null;
       var detailSeenContent = new Set();
@@ -1107,7 +1236,8 @@
         sessions:
           "SELECT s.session_id, s.requests, s.first_at, s.last_at, s.key_id, s.model, s.project, s.summary\nFROM session_summaries s\nWHERE EXISTS (SELECT 1 FROM session_facets f WHERE f.session_id = s.session_id AND f.name = ? AND f.value = ?) …\nORDER BY s.last_at DESC LIMIT ?",
         session:
-          "SELECT request_id, trace_id, key_id, summary, requested_model, model, outcome, status_code, started_at, completed_at, facets_json\nFROM records\nWHERE session_id = ?\nORDER BY started_at LIMIT ? OFFSET ?",
+          "SELECT request_id, key_id, summary, response_preview, requested_model, model, outcome, status_code, started_at, completed_at, facets_json\nFROM records\nWHERE session_id = ?\nORDER BY started_at, id\n-- grouped into durable turn.id values or consecutive user-summary runs",
+        turn: "SELECT request_id, original_ref, response_ref, facets_json\nFROM records\nWHERE session_id = ? AND request_id IN (…)\nORDER BY started_at, id LIMIT ? OFFSET ?",
         request:
           "SELECT …, original_ref, upstream_ref, response_ref, metadata_json, facets_json\nFROM records\nWHERE request_id = ? LIMIT 1",
         export:
@@ -1591,13 +1721,7 @@
                       esc(t("systemTask")) +
                       "</span>",
                   );
-                if ((row.kinds || []).indexOf("compaction") >= 0)
-                  sessionBadges.push(
-                    '<span class="kind-badge compaction">' +
-                      esc(t("sessionHasCompaction")) +
-                      "</span>",
-                  );
-                else if (
+                if (
                   (row.kinds || []).length === 1 &&
                   row.kinds[0] === "prewarm"
                 )
@@ -1647,6 +1771,7 @@
       async function showSession(id) {
         var selected = sessionsByID[id] || {};
         detailSessionID = id;
+        currentTurnID = "";
         detailPage = 1;
         detailTotal = 0;
         detailRecords = [];
@@ -1662,6 +1787,7 @@
           .join(" · ");
         document.getElementById("listView").style.display = "none";
         document.getElementById("requestView").classList.remove("open");
+        document.getElementById("turnView").classList.remove("open");
         document.getElementById("subDetailView").classList.remove("open");
         document.getElementById("drawer").classList.add("open");
         document.getElementById("download").onclick = function () {
@@ -1673,34 +1799,26 @@
         detailPage = Math.max(1, pageNumber || detailPage || 1);
         var baseOffset = (detailPage - 1) * detailPageSize;
         var order = document.getElementById("sessionOrder").value || "desc";
-        var queryOffset = Math.max(0, baseOffset - 1),
-          hasPrevious = baseOffset > 0;
         var page = await api(
-          "/sessions?id=" +
+          "/turns?session_id=" +
             encodeURIComponent(detailSessionID) +
             "&limit=" +
-            (detailPageSize + (hasPrevious ? 1 : 0)) +
+            detailPageSize +
             "&offset=" +
-            queryOffset +
+            baseOffset +
             "&order=" +
-            order +
-            "&metadata_only=true",
-          t("loadingSession"),
+            order,
+          t("loadingTurns"),
           sqlTemplates.session,
         );
         detailTotal = page.total;
-        var loadedRecords = page.records || [],
-          previousRecord = hasPrevious ? loadedRecords.shift() : null;
-        detailRecords = loadedRecords.slice(0, detailPageSize);
+        detailRecords = page.turns || [];
         if (detailRecords[0]) {
           var first = detailRecords[0];
           var selected = sessionsByID[detailSessionID] || {};
           document.getElementById("detailTitle").textContent =
             selected.summary ||
-            first.summary ||
-            (first.facets &&
-              first.facets["project.name"] &&
-              first.facets["project.name"][0]) ||
+            first.user_text ||
             selected.project ||
             t("untitled");
           document.getElementById("detailMeta").textContent =
@@ -1708,14 +1826,13 @@
             " · " +
             detailTotal +
             " " +
-            t("records") +
+            t("turnsLabel") +
             " · " +
-            localTime(first.started_at);
+            localTime(first.last_at);
         }
         document.getElementById("detail").innerHTML = detailRecords
           .map(function (record, index) {
-            var prior = index ? detailRecords[index - 1] : previousRecord;
-            return renderRequestSummary(record, baseOffset + index + 1, prior);
+            return renderTurnSummary(record, baseOffset + index + 1);
           })
           .join("");
         var pages = Math.max(1, Math.ceil(detailTotal / detailPageSize));
@@ -1735,6 +1852,223 @@
           : "none";
         lastDetail = detailRecords;
         window.scrollTo(0, 0);
+      }
+      function renderTurnSummary(turn, number) {
+        var tools = turn.tool_names || [];
+        var finalText = turn.final_text || t("noFinalAnswer");
+        return (
+          '<article class="panel turn-card" onclick="openTurn(decodeURIComponent(\'' +
+          encodeURIComponent(turn.turn_id) +
+          '\'))"><div class="turn-primary"><section><h3>' +
+          esc(t("userCommand")) +
+          '</h3><div class="turn-text">' +
+          esc(turn.user_text || t("untitled")) +
+          '</div></section><section class="turn-final"><h3>' +
+          esc(t("finalAnswer")) +
+          '</h3><div class="turn-text">' +
+          esc(finalText) +
+          '</div></section></div><div class="conversation-meta">#' +
+          number +
+          " · " +
+          esc(
+            t("turnSummary", {
+              requests: turn.requests || 0,
+              tools: tools.length,
+            }) +
+              " · " +
+              [keyName(turn.key_id), turn.model, localTime(turn.last_at)]
+                .filter(Boolean)
+                .join(" · "),
+          ) +
+          " · " +
+          esc(t("openTurn")) +
+          "</div></article>"
+        );
+      }
+      function openTurn(id) {
+        location.hash =
+          "#/sessions/" +
+          encodeURIComponent(detailSessionID) +
+          "/turns/" +
+          encodeURIComponent(id);
+      }
+      async function showTurn(sessionID, turnID) {
+        detailSessionID = sessionID;
+        currentTurnID = turnID;
+        turnProcessPage = 1;
+        turnProcessTotal = 0;
+        document.getElementById("listView").style.display = "none";
+        document.getElementById("drawer").classList.remove("open");
+        document.getElementById("requestView").classList.remove("open");
+        document.getElementById("subDetailView").classList.remove("open");
+        document.getElementById("turnView").classList.add("open");
+        await loadTurnPage(1);
+      }
+      async function loadTurnPage(pageNumber) {
+        turnProcessPage = Math.max(1, pageNumber || turnProcessPage || 1);
+        var offset = (turnProcessPage - 1) * turnProcessPageSize;
+        var page = await api(
+          "/turns?session_id=" +
+            encodeURIComponent(detailSessionID) +
+            "&turn_id=" +
+            encodeURIComponent(currentTurnID) +
+            "&limit=" +
+            turnProcessPageSize +
+            "&offset=" +
+            offset,
+          t("loadingTurn"),
+          sqlTemplates.turn,
+        );
+        var turn = page.turn || {};
+        turnProcessTotal = page.total || 0;
+        document.getElementById("turnTitle").textContent =
+          turn.user_text || t("untitled");
+        document.getElementById("turnMeta").textContent = [
+          keyName(turn.key_id),
+          turn.model,
+          localTime(turn.last_at),
+        ]
+          .filter(Boolean)
+          .join(" · ");
+        document.getElementById("turnPrimary").innerHTML =
+          "<section><h3>" +
+          esc(t("userCommand")) +
+          '</h3><div class="turn-text">' +
+          esc(turn.user_text || t("untitled")) +
+          '</div></section><section class="turn-final"><h3>' +
+          esc(t("finalAnswer")) +
+          '</h3><div class="turn-text">' +
+          esc(turn.final_text || t("noFinalAnswer")) +
+          "</div></section>";
+        document.getElementById("turnProcess").innerHTML = (page.records || [])
+          .map(function (view, index) {
+            return renderTurnProcess(view, offset + index + 1);
+          })
+          .join("");
+        var pages = Math.max(
+          1,
+          Math.ceil(turnProcessTotal / turnProcessPageSize),
+        );
+        document.getElementById("turnPageInfo").textContent = t("pageInfo", {
+          page: turnProcessPage,
+          pages: pages,
+          total: turnProcessTotal,
+        });
+        var buttons = document.querySelectorAll("#turnPagination button");
+        buttons[0].disabled = turnProcessPage <= 1;
+        buttons[1].disabled = turnProcessPage >= pages;
+        document.getElementById("turnPagination").style.display =
+          turnProcessTotal > turnProcessPageSize ? "flex" : "none";
+        window.scrollTo(0, 0);
+      }
+      function renderTurnProcess(view, number) {
+        var readable = [],
+          tools = {},
+          toolOrder = [];
+        (view.entries || []).forEach(function (entry, index) {
+          if (entry.role === "tool_call" || entry.role === "tool_result") {
+            var id = entry.call_id || "index-" + index;
+            if (!tools[id]) {
+              tools[id] = {
+                id: id,
+                name: entry.label || t("toolSummary"),
+                hasCall: false,
+                hasResult: false,
+              };
+              toolOrder.push(id);
+            }
+            tools[id].hasCall = tools[id].hasCall || entry.role === "tool_call";
+            tools[id].hasResult =
+              tools[id].hasResult || entry.role === "tool_result";
+            if (entry.label) tools[id].name = entry.label;
+            return;
+          }
+          if (entry.role === "user") return;
+          if (entry.role === "compaction") {
+            readable.push(
+              '<div class="context-summary">' +
+                esc(t("compactionMarker")) +
+                "</div>",
+            );
+            return;
+          }
+          if (entry.text)
+            readable.push(
+              renderMessage(
+                entry.role || "assistant",
+                entry.text,
+                entry.label || "",
+              ),
+            );
+        });
+        var toolHTML = toolOrder
+          .map(function (id) {
+            var tool = tools[id];
+            return (
+              '<button class="tool-summary" onclick="event.stopPropagation();openTurnTool(decodeURIComponent(\'' +
+              encodeURIComponent(view.request_id) +
+              "'),decodeURIComponent('" +
+              encodeURIComponent(tool.id) +
+              "'))\">" +
+              esc(tool.name) +
+              " · " +
+              esc(t("viewTool")) +
+              "</button>"
+            );
+          })
+          .join("");
+        var body = readable.join("") + toolHTML;
+        if (!body)
+          body = '<div class="empty">' + esc(t("noReadableContent")) + "</div>";
+        return (
+          '<details class="panel process-step"><summary><b>' +
+          esc(t("processStep", { number: number })) +
+          " · " +
+          esc(kindLabel(view.kind)) +
+          '</b><span class="muted">' +
+          esc(
+            [
+              view.requested_model || view.model,
+              localTime(view.started_at),
+              toolOrder.length
+                ? t("toolSummary") + " × " + toolOrder.length
+                : "",
+            ]
+              .filter(Boolean)
+              .join(" · "),
+          ) +
+          '</span></summary><div class="process-step-body">' +
+          body +
+          "<button onclick=\"openTurnRequest(decodeURIComponent('" +
+          encodeURIComponent(view.request_id) +
+          "'))\">" +
+          esc(t("rawDiagnostics")) +
+          "</button></div></details>"
+        );
+      }
+      function openTurnRequest(requestID) {
+        location.hash =
+          "#/sessions/" +
+          encodeURIComponent(detailSessionID) +
+          "/turns/" +
+          encodeURIComponent(currentTurnID) +
+          "/requests/" +
+          encodeURIComponent(requestID);
+      }
+      function openTurnTool(requestID, callID) {
+        currentRequestID = requestID;
+        location.hash =
+          "#/sessions/" +
+          encodeURIComponent(detailSessionID) +
+          "/turns/" +
+          encodeURIComponent(currentTurnID) +
+          "/requests/" +
+          encodeURIComponent(requestID) +
+          "/tools/" +
+          encodeURIComponent(callID);
+      }
+      function changeTurnPage(delta) {
+        loadTurnPage(turnProcessPage + delta);
       }
       function changeSessionPage(delta) {
         loadSessionPage(detailPage + delta);
@@ -1827,11 +2161,13 @@
           "/requests/" +
           encodeURIComponent(id);
       }
-      async function showRequest(sessionID, requestID) {
+      async function showRequest(sessionID, requestID, turnID) {
         detailSessionID = sessionID;
+        if (turnID != null) currentTurnID = turnID;
         currentRequestID = requestID;
         document.getElementById("listView").style.display = "none";
         document.getElementById("drawer").classList.remove("open");
+        document.getElementById("turnView").classList.remove("open");
         document.getElementById("subDetailView").classList.remove("open");
         document.getElementById("requestView").classList.add("open");
         document.getElementById("requestDetail").innerHTML = "";
@@ -2227,18 +2563,22 @@
         });
       }
       function openRaw(part) {
+        var base = "#/sessions/" + encodeURIComponent(detailSessionID);
+        if (currentTurnID)
+          base += "/turns/" + encodeURIComponent(currentTurnID);
         location.hash =
-          "#/sessions/" +
-          encodeURIComponent(detailSessionID) +
+          base +
           "/requests/" +
           encodeURIComponent(currentRequestID) +
           "/raw/" +
           part;
       }
       function openTool(index) {
+        var base = "#/sessions/" + encodeURIComponent(detailSessionID);
+        if (currentTurnID)
+          base += "/turns/" + encodeURIComponent(currentTurnID);
         location.hash =
-          "#/sessions/" +
-          encodeURIComponent(detailSessionID) +
+          base +
           "/requests/" +
           encodeURIComponent(currentRequestID) +
           "/tools/" +
@@ -2366,6 +2706,7 @@
         document.getElementById("listView").style.display = "none";
         document.getElementById("drawer").classList.remove("open");
         document.getElementById("requestView").classList.remove("open");
+        document.getElementById("turnView").classList.remove("open");
         document.getElementById("subDetailView").classList.add("open");
         window.scrollTo(0, 0);
       }
@@ -2684,12 +3025,23 @@
       function goSession() {
         location.hash = "#/sessions/" + encodeURIComponent(detailSessionID);
       }
-      function goRequest() {
+      function goTurn() {
         location.hash =
           "#/sessions/" +
           encodeURIComponent(detailSessionID) +
-          "/requests/" +
-          encodeURIComponent(currentRequestID);
+          "/turns/" +
+          encodeURIComponent(currentTurnID);
+      }
+      function goParentFromRequest() {
+        if (currentTurnID) goTurn();
+        else goSession();
+      }
+      function goRequest() {
+        var base = "#/sessions/" + encodeURIComponent(detailSessionID);
+        if (currentTurnID)
+          base += "/turns/" + encodeURIComponent(currentTurnID);
+        location.hash =
+          base + "/requests/" + encodeURIComponent(currentRequestID);
       }
       function closeDrawer() {
         goSessions();
@@ -2712,11 +3064,52 @@
         document.getElementById("subDetailView").classList.remove("open");
         if (
           path[1] &&
+          path[2] === "turns" &&
+          path[3] &&
+          path[4] === "requests" &&
+          path[5] &&
+          path[6] === "raw" &&
+          path[7]
+        ) {
+          currentTurnID = path[3];
+          await showRawDetail(path[1], path[5], path[7]);
+          return;
+        }
+        if (
+          path[1] &&
+          path[2] === "turns" &&
+          path[3] &&
+          path[4] === "requests" &&
+          path[5] &&
+          path[6] === "tools" &&
+          path[7] != null
+        ) {
+          currentTurnID = path[3];
+          await showToolDetail(path[1], path[5], path[7]);
+          return;
+        }
+        if (
+          path[1] &&
+          path[2] === "turns" &&
+          path[3] &&
+          path[4] === "requests" &&
+          path[5]
+        ) {
+          await showRequest(path[1], path[5], path[3]);
+          return;
+        }
+        if (path[1] && path[2] === "turns" && path[3]) {
+          await showTurn(path[1], path[3]);
+          return;
+        }
+        if (
+          path[1] &&
           path[2] === "requests" &&
           path[3] &&
           path[4] === "raw" &&
           path[5]
         ) {
+          currentTurnID = "";
           await showRawDetail(path[1], path[3], path[5]);
           return;
         }
@@ -2727,10 +3120,12 @@
           path[4] === "tools" &&
           path[5] != null
         ) {
+          currentTurnID = "";
           await showToolDetail(path[1], path[3], path[5]);
           return;
         }
         if (path[1] && path[2] === "requests" && path[3]) {
+          currentTurnID = "";
           await showRequest(path[1], path[3]);
           return;
         }
@@ -2740,7 +3135,9 @@
         }
         document.getElementById("drawer").classList.remove("open");
         document.getElementById("requestView").classList.remove("open");
+        document.getElementById("turnView").classList.remove("open");
         document.getElementById("subDetailView").classList.remove("open");
+        currentTurnID = "";
         document.getElementById("listView").style.display = "grid";
       }
       function esc(x) {
