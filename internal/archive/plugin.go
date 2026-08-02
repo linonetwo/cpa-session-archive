@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"log"
 	"net"
 	"net/http"
@@ -148,7 +149,7 @@ func (p *Plugin) configure(raw []byte) ([]byte, error) {
 		p.wg.Add(1)
 		go p.sender()
 	}
-	reg := map[string]any{"schema_version": 2, "metadata": map[string]any{"Name": "cpa-session-archive", "Version": "0.7.0", "Author": "OneTwo", "GitHubRepository": "https://github.com/linonetwo/cpa-session-archive", "ConfigFields": []any{}}, "capabilities": map[string]any{"request_interceptor": true, "request_lifecycle_plugin": true, "response_interceptor": true, "response_stream_interceptor": true, "management_api": true}}
+	reg := map[string]any{"schema_version": 2, "metadata": map[string]any{"Name": "cpa-session-archive", "Version": "0.7.1", "Author": "OneTwo", "GitHubRepository": "https://github.com/linonetwo/cpa-session-archive", "ConfigFields": []any{}}, "capabilities": map[string]any{"request_interceptor": true, "request_lifecycle_plugin": true, "response_interceptor": true, "response_stream_interceptor": true, "management_api": true}}
 	return ok(reg)
 }
 func (p *Plugin) captureRequest(r intercept, afterAuth bool) {
@@ -512,12 +513,13 @@ func enrichDesktopMetadata(rec *Record, h http.Header) {
 		return
 	}
 	var meta struct {
-		SessionID   string `json:"session_id"`
-		ThreadID    string `json:"thread_id"`
-		TurnID      string `json:"turn_id"`
-		WindowID    string `json:"window_id"`
-		RequestKind string `json:"request_kind"`
-		Workspaces  map[string]struct {
+		SessionID    string `json:"session_id"`
+		ThreadID     string `json:"thread_id"`
+		TurnID       string `json:"turn_id"`
+		WindowID     string `json:"window_id"`
+		RequestKind  string `json:"request_kind"`
+		ThreadSource string `json:"thread_source"`
+		Workspaces   map[string]struct {
 			AssociatedRemoteURLs map[string]string `json:"associated_remote_urls"`
 		} `json:"workspaces"`
 	}
@@ -528,6 +530,7 @@ func enrichDesktopMetadata(rec *Record, h http.Header) {
 	rec.TurnID = meta.TurnID
 	rec.WindowID = firstNonEmpty(meta.WindowID, rec.WindowID)
 	rec.RequestKind = meta.RequestKind
+	rec.ThreadSource = strings.ToLower(strings.TrimSpace(meta.ThreadSource))
 	paths := make([]string, 0, len(meta.Workspaces))
 	for p := range meta.Workspaces {
 		paths = append(paths, p)
@@ -546,14 +549,30 @@ func enrichDesktopMetadata(rec *Record, h http.Header) {
 	}
 }
 func extractConversationSummary(body []byte) string {
+	candidates := extractConversationSummaries(body)
+	if len(candidates) == 0 {
+		return ""
+	}
+	return candidates[len(candidates)-1]
+}
+
+func extractConversationSummaryFirst(body []byte) string {
+	candidates := extractConversationSummaries(body)
+	if len(candidates) == 0 {
+		return ""
+	}
+	return candidates[0]
+}
+
+func extractConversationSummaries(body []byte) []string {
 	for _, path := range []string{"title", "conversation.title", "metadata.title", "client_metadata.title"} {
 		if value := compactSummary(gjson.GetBytes(body, path).String()); value != "" {
-			return value
+			return []string{value}
 		}
 	}
 	var root any
 	if json.Unmarshal(body, &root) != nil {
-		return ""
+		return nil
 	}
 	var candidates []string
 	var walk func(any)
@@ -584,9 +603,9 @@ func extractConversationSummary(body []byte) string {
 		}
 	}
 	if len(candidates) == 0 {
-		return ""
+		return nil
 	}
-	return candidates[len(candidates)-1]
+	return candidates
 }
 
 func collectSummaryStrings(value any, candidates *[]string) {
@@ -608,11 +627,19 @@ func collectSummaryStrings(value any, candidates *[]string) {
 	}
 }
 func meaningfulSummary(value string) string {
-	value = strings.TrimSpace(value)
+	value = strings.TrimSpace(html.UnescapeString(value))
+	lower := strings.ToLower(value)
+	for _, marker := range []string{"\nuser prompt:\n", "\r\nuser prompt:\r\n"} {
+		if pos := strings.LastIndex(lower, marker); pos >= 0 {
+			value = strings.TrimSpace(value[pos+len(marker):])
+			lower = strings.ToLower(value)
+			break
+		}
+	}
 	for {
-		lower := strings.ToLower(value)
+		lower = strings.ToLower(value)
 		matched := false
-		for _, tag := range []string{"environment_context", "environment_info", "workspace_info", "in-app-browser-context", "app-context", "context", "editorcontext", "reminderinstructions"} {
+		for _, tag := range []string{"environment_context", "environment_info", "workspace_info", "in-app-browser-context", "app-context", "context", "editorcontext", "reminderinstructions", "codex_internal_context"} {
 			open := "<" + tag
 			if !strings.HasPrefix(lower, open) {
 				continue
@@ -630,7 +657,8 @@ func meaningfulSummary(value string) string {
 			break
 		}
 	}
-	lower := strings.ToLower(value)
+	value = unwrapSummaryTag(value, "userrequest")
+	lower = strings.ToLower(value)
 	if strings.HasPrefix(lower, "# files mentioned by the user:") {
 		marker := "## my request for codex:"
 		if pos := strings.Index(lower, marker); pos >= 0 {
@@ -640,6 +668,17 @@ func meaningfulSummary(value string) string {
 		}
 	}
 	return compactSummary(value)
+}
+
+func unwrapSummaryTag(value, tag string) string {
+	trimmed := strings.TrimSpace(value)
+	lower := strings.ToLower(trimmed)
+	open := "<" + tag + ">"
+	close := "</" + tag + ">"
+	if strings.HasPrefix(lower, open) && strings.HasSuffix(lower, close) {
+		return strings.TrimSpace(trimmed[len(open) : len(trimmed)-len(close)])
+	}
+	return trimmed
 }
 func compactSummary(value string) string {
 	value = strings.Join(strings.Fields(value), " ")
@@ -655,6 +694,9 @@ func compactSummary(value string) string {
 func enrichGenericFacets(rec *Record, h http.Header, body []byte) {
 	if rec.Facets == nil {
 		rec.Facets = map[string][]string{}
+	}
+	if rec.ThreadSource == "" {
+		rec.ThreadSource = extractThreadSource(body)
 	}
 	addFacet := func(k, v string) {
 		v = strings.TrimSpace(v)
@@ -685,7 +727,7 @@ func enrichGenericFacets(rec *Record, h http.Header, body []byte) {
 		{"client", rec.Client}, {"client.user_agent", h.Get("User-Agent")},
 		{"project.name", rec.ProjectName}, {"project.path", rec.ProjectPath}, {"git.remote", rec.GitRemote},
 		{"session.id", rec.SessionID}, {"thread.id", rec.ThreadID}, {"turn.id", rec.TurnID}, {"window.id", rec.WindowID},
-		{"request.kind", rec.RequestKind}, {"client.request_id", h.Get("X-Client-Request-Id")},
+		{"request.kind", rec.RequestKind}, {"thread.source", rec.ThreadSource}, {"client.request_id", h.Get("X-Client-Request-Id")},
 		{"request.id", h.Get("X-Request-Id")}, {"originator", h.Get("Originator")},
 		{"sdk.language", h.Get("X-Stainless-Lang")}, {"sdk.package_version", h.Get("X-Stainless-Package-Version")},
 		{"client.os", h.Get("X-Stainless-OS")}, {"client.arch", h.Get("X-Stainless-Arch")},
@@ -729,6 +771,23 @@ func enrichGenericFacets(rec *Record, h http.Header, body []byte) {
 	if rec.GitRemote == "" {
 		rec.GitRemote = firstFacet(rec.Facets, "git.remote")
 	}
+}
+
+func extractThreadSource(body []byte) string {
+	if direct := strings.TrimSpace(gjson.GetBytes(body, "client_metadata.thread_source").String()); direct != "" {
+		return strings.ToLower(direct)
+	}
+	raw := gjson.GetBytes(body, "client_metadata.x-codex-turn-metadata").String()
+	if raw == "" {
+		return ""
+	}
+	var meta struct {
+		ThreadSource string `json:"thread_source"`
+	}
+	if json.Unmarshal([]byte(raw), &meta) != nil {
+		return ""
+	}
+	return strings.ToLower(strings.TrimSpace(meta.ThreadSource))
 }
 func firstFacet(facets map[string][]string, name string) string {
 	if values := facets[name]; len(values) > 0 {

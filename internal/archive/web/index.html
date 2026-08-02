@@ -90,20 +90,77 @@
       .drawer.open {
         display: block;
       }
-      .route-page { display:none; min-height:100vh; background:#f5f6f8; padding:24px; box-sizing:border-box; }
-      .route-page.open { display:block; }
-      .route-shell { max-width:1500px; margin:auto; }
-      .back-button { background:#1769e0; color:#fff; border-color:#1769e0; font-weight:700; padding:9px 14px; }
-      .back-button:hover { background:#0f55bd; }
-      .request-list-item { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:12px; margin:10px 0; cursor:pointer; }
-      .request-list-item:hover { border-color:#7aa7e8; box-shadow:0 2px 8px #1769e018; }
-      .loading-overlay { display:none; position:fixed; inset:0; z-index:100; background:#f8fafce8; place-items:center; }
-      .loading-overlay.open { display:grid; }
-      .loading-box { width:min(760px,calc(100vw - 40px)); }
-      .spinner { width:30px; height:30px; border:4px solid #dce7f7; border-top-color:#1769e0; border-radius:50%; animation:spin .8s linear infinite; }
-      .loading-sql { margin-top:12px; max-height:160px; background:#111827; color:#d1e4ff; }
-      @keyframes spin { to { transform:rotate(360deg); } }
-      .full-content { margin-top:8px; }
+      .route-page {
+        display: none;
+        min-height: 100vh;
+        background: #f5f6f8;
+        padding: 24px;
+        box-sizing: border-box;
+      }
+      .route-page.open {
+        display: block;
+      }
+      .route-shell {
+        max-width: 1500px;
+        margin: auto;
+      }
+      .back-button {
+        background: #1769e0;
+        color: #fff;
+        border-color: #1769e0;
+        font-weight: 700;
+        padding: 9px 14px;
+      }
+      .back-button:hover {
+        background: #0f55bd;
+      }
+      .request-list-item {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 12px;
+        margin: 10px 0;
+        cursor: pointer;
+      }
+      .request-list-item:hover {
+        border-color: #7aa7e8;
+        box-shadow: 0 2px 8px #1769e018;
+      }
+      .loading-overlay {
+        display: none;
+        position: fixed;
+        inset: 0;
+        z-index: 100;
+        background: #f8fafce8;
+        place-items: center;
+      }
+      .loading-overlay.open {
+        display: grid;
+      }
+      .loading-box {
+        width: min(760px, calc(100vw - 40px));
+      }
+      .spinner {
+        width: 30px;
+        height: 30px;
+        border: 4px solid #dce7f7;
+        border-top-color: #1769e0;
+        border-radius: 50%;
+        animation: spin 0.8s linear infinite;
+      }
+      .loading-sql {
+        margin-top: 12px;
+        max-height: 160px;
+        background: #111827;
+        color: #d1e4ff;
+      }
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+      .full-content {
+        margin-top: 8px;
+      }
       pre {
         white-space: pre-wrap;
         word-break: break-word;
@@ -325,7 +382,12 @@
       .filter-actions input {
         width: 72px;
       }
-      .drawer { position:static; inset:auto; box-shadow:none; overflow:visible; }
+      .drawer {
+        position: static;
+        inset: auto;
+        box-shadow: none;
+        overflow: visible;
+      }
       .drawer-head {
         position: sticky;
         top: -20px;
@@ -347,45 +409,217 @@
         content-visibility: auto;
         contain-intrinsic-size: 600px;
       }
-      .conversation-stream { display: grid; gap: 10px; margin: 12px 0; }
-      .message-bubble { border: 1px solid #e1e7ee; border-radius: 10px; padding: 10px 12px; background: #f8fafc; }
-      .message-bubble.user { border-left: 4px solid #3b82f6; background: #eff6ff; }
-      .message-bubble.assistant { border-left: 4px solid #10b981; background: #ecfdf5; }
-      .message-bubble.tool { border-left: 4px solid #f59e0b; background: #fffbeb; }
-      .message-bubble.compaction { border-left: 4px solid #8b5cf6; background: #f5f3ff; }
-      .message-role { font-size: 12px; font-weight: 700; color: #475467; margin-bottom: 6px; }
-      .message-text { white-space: pre-wrap; word-break: break-word; line-height: 1.55; }
-      .context-summary { color: #667085; background: #f2f4f7; border-radius: 8px; padding: 8px 10px; margin: 8px 0; }
-      .technical-meta { margin: 8px 0; }
-      .technical-meta dl { display: grid; grid-template-columns: minmax(130px, 220px) 1fr; gap: 5px 12px; }
-      .technical-meta dt { color: #667085; }
-      .technical-meta dd { margin: 0; word-break: break-word; }
-      .raw-diagnostics { margin-top: 8px; }
-      .request-snippet { margin-top:8px; color:#344054; line-height:1.5; display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; }
-      .response-snippet { margin-top:6px; color:#08745b; line-height:1.5; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
-      .pagination { display:flex; justify-content:center; align-items:center; gap:12px; margin:18px 0; }
-      .pagination button:disabled { cursor:not-allowed; opacity:.45; }
-      .pagination input { width:72px; text-align:center; }
-      .kind-badge { display:inline-flex; align-items:center; border-radius:999px; padding:3px 9px; font-size:12px; font-weight:700; background:#eef2ff; color:#4338ca; margin-right:8px; }
-      .kind-badge.compaction { background:#f3e8ff; color:#7e22ce; }
-      .kind-badge.retry { background:#fff7ed; color:#c2410c; }
-      .kind-badge.history_snapshot,.kind-badge.context_rebuild { background:#ecfeff; color:#0e7490; }
-      .download-notice { display:none; margin:12px 0; padding:12px 14px; border-radius:10px; background:#eff6ff; border:1px solid #bfdbfe; }
-      .download-notice.open { display:block; }
-      .download-notice a { font-weight:700; word-break:break-all; }
-      .system-context { margin:10px 0; border:1px solid #d0d5dd; border-radius:10px; padding:10px 12px; background:#f8fafc; }
-      .system-context summary { cursor:pointer; font-weight:700; }
-      .system-context pre { max-height:65vh; overflow:auto; white-space:pre-wrap; word-break:break-word; }
-      .export-controls { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
-      .export-controls select { padding:8px; border:1px solid #ccd3dc; border-radius:6px; background:#fff; }
-      .diagnostic-grid,.tool-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:10px; margin:12px 0; }
-      .diagnostic-card,.tool-card { border:1px solid #d9e1ea; border-radius:10px; padding:12px; background:#fff; }
-      .diagnostic-card h3,.tool-card h3 { margin:0 0 6px; font-size:15px; }
-      .diagnostic-card p,.tool-card p { margin:5px 0; }
-      .diagnostic-card button,.tool-card button { margin-top:8px; color:#1769e0; border-color:#9fc0ed; }
-      .diagnostic-toolbar { display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; margin:12px 0; }
-      .diagnostic-content { max-height:calc(100vh - 260px); min-height:320px; }
-      .status-success { color:#08745b; } .status-error { color:#b42318; }
+      .conversation-stream {
+        display: grid;
+        gap: 10px;
+        margin: 12px 0;
+      }
+      .message-bubble {
+        border: 1px solid #e1e7ee;
+        border-radius: 10px;
+        padding: 10px 12px;
+        background: #f8fafc;
+      }
+      .message-bubble.user {
+        border-left: 4px solid #3b82f6;
+        background: #eff6ff;
+      }
+      .message-bubble.assistant {
+        border-left: 4px solid #10b981;
+        background: #ecfdf5;
+      }
+      .message-bubble.tool {
+        border-left: 4px solid #f59e0b;
+        background: #fffbeb;
+      }
+      .message-bubble.compaction {
+        border-left: 4px solid #8b5cf6;
+        background: #f5f3ff;
+      }
+      .message-role {
+        font-size: 12px;
+        font-weight: 700;
+        color: #475467;
+        margin-bottom: 6px;
+      }
+      .message-text {
+        white-space: pre-wrap;
+        word-break: break-word;
+        line-height: 1.55;
+      }
+      .context-summary {
+        color: #667085;
+        background: #f2f4f7;
+        border-radius: 8px;
+        padding: 8px 10px;
+        margin: 8px 0;
+      }
+      .technical-meta {
+        margin: 8px 0;
+      }
+      .technical-meta dl {
+        display: grid;
+        grid-template-columns: minmax(130px, 220px) 1fr;
+        gap: 5px 12px;
+      }
+      .technical-meta dt {
+        color: #667085;
+      }
+      .technical-meta dd {
+        margin: 0;
+        word-break: break-word;
+      }
+      .raw-diagnostics {
+        margin-top: 8px;
+      }
+      .request-snippet {
+        margin-top: 8px;
+        color: #344054;
+        line-height: 1.5;
+        display: -webkit-box;
+        -webkit-line-clamp: 3;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+      }
+      .response-snippet {
+        margin-top: 6px;
+        color: #08745b;
+        line-height: 1.5;
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+      }
+      .pagination {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        gap: 12px;
+        margin: 18px 0;
+      }
+      .pagination button:disabled {
+        cursor: not-allowed;
+        opacity: 0.45;
+      }
+      .pagination input {
+        width: 72px;
+        text-align: center;
+      }
+      .kind-badge {
+        display: inline-flex;
+        align-items: center;
+        border-radius: 999px;
+        padding: 3px 9px;
+        font-size: 12px;
+        font-weight: 700;
+        background: #eef2ff;
+        color: #4338ca;
+        margin-right: 8px;
+      }
+      .kind-badge.compaction {
+        background: #f3e8ff;
+        color: #7e22ce;
+      }
+      .kind-badge.retry {
+        background: #fff7ed;
+        color: #c2410c;
+      }
+      .kind-badge.history_snapshot,
+      .kind-badge.context_rebuild {
+        background: #ecfeff;
+        color: #0e7490;
+      }
+      .download-notice {
+        display: none;
+        margin: 12px 0;
+        padding: 12px 14px;
+        border-radius: 10px;
+        background: #eff6ff;
+        border: 1px solid #bfdbfe;
+      }
+      .download-notice.open {
+        display: block;
+      }
+      .download-notice a {
+        font-weight: 700;
+        word-break: break-all;
+      }
+      .system-context {
+        margin: 10px 0;
+        border: 1px solid #d0d5dd;
+        border-radius: 10px;
+        padding: 10px 12px;
+        background: #f8fafc;
+      }
+      .system-context summary {
+        cursor: pointer;
+        font-weight: 700;
+      }
+      .system-context pre {
+        max-height: 65vh;
+        overflow: auto;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+      .export-controls {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+      .export-controls select {
+        padding: 8px;
+        border: 1px solid #ccd3dc;
+        border-radius: 6px;
+        background: #fff;
+      }
+      .diagnostic-grid,
+      .tool-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+        gap: 10px;
+        margin: 12px 0;
+      }
+      .diagnostic-card,
+      .tool-card {
+        border: 1px solid #d9e1ea;
+        border-radius: 10px;
+        padding: 12px;
+        background: #fff;
+      }
+      .diagnostic-card h3,
+      .tool-card h3 {
+        margin: 0 0 6px;
+        font-size: 15px;
+      }
+      .diagnostic-card p,
+      .tool-card p {
+        margin: 5px 0;
+      }
+      .diagnostic-card button,
+      .tool-card button {
+        margin-top: 8px;
+        color: #1769e0;
+        border-color: #9fc0ed;
+      }
+      .diagnostic-toolbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        flex-wrap: wrap;
+        margin: 12px 0;
+      }
+      .diagnostic-content {
+        max-height: calc(100vh - 260px);
+        min-height: 320px;
+      }
+      .status-success {
+        color: #08745b;
+      }
+      .status-error {
+        color: #b42318;
+      }
       .login input {
         width: 100%;
         box-sizing: border-box;
@@ -448,7 +682,16 @@
         <section class="panel sessions-panel">
           <div class="section-head">
             <h2 data-i18n="sessionsTitle"></h2>
-            <div class="export-controls"><span id="resultCount" class="muted"></span><select id="allExportFormat"><option value="archive" data-i18n="archiveFormat"></option><option value="sft" data-i18n="sftFormat"></option></select><button data-i18n="exportAll" onclick="downloadExport('all')"></button></div>
+            <div class="export-controls">
+              <span id="resultCount" class="muted"></span
+              ><select id="allExportFormat">
+                <option value="archive" data-i18n="archiveFormat"></option>
+                <option value="sft" data-i18n="sftFormat"></option></select
+              ><button
+                data-i18n="exportAll"
+                onclick="downloadExport('all')"
+              ></button>
+            </div>
           </div>
           <div id="allDownloadNotice" class="download-notice"></div>
           <div class="table-wrap">
@@ -471,25 +714,93 @@
     <div id="drawer" class="drawer route-page">
       <div class="route-shell">
         <div class="drawer-head">
-          <button class="back-button" data-i18n="backToSessions" onclick="goSessions()"></button>
-          <div class="export-controls"><select id="sessionOrder" onchange="loadSessionPage(1)"><option value="desc" data-i18n="newestFirst"></option><option value="asc" data-i18n="oldestFirst"></option></select><select id="sessionExportFormat"><option value="archive" data-i18n="archiveFormat"></option><option value="sft" data-i18n="sftFormat"></option></select><button id="download" data-i18n="exportSession"></button></div>
+          <button
+            class="back-button"
+            data-i18n="backToSessions"
+            onclick="goSessions()"
+          ></button>
+          <div class="export-controls">
+            <select id="sessionOrder" onchange="loadSessionPage(1)">
+              <option value="desc" data-i18n="newestFirst"></option>
+              <option value="asc" data-i18n="oldestFirst"></option></select
+            ><select id="sessionExportFormat">
+              <option value="archive" data-i18n="archiveFormat"></option>
+              <option value="sft" data-i18n="sftFormat"></option></select
+            ><button id="download" data-i18n="exportSession"></button>
+          </div>
         </div>
         <h2 id="detailTitle"></h2>
         <p id="detailMeta" class="muted"></p>
         <div id="downloadNotice" class="download-notice"></div>
         <div id="detail"></div>
-        <nav id="pagination" class="pagination"><button id="pageFirst" data-i18n="firstPage" onclick="goSessionPage(1)"></button><button id="pagePrevious" data-i18n="previousPage" onclick="changeSessionPage(-1)"></button><strong id="pageInfo"></strong><label><span data-i18n="jumpToPage"></span> <input id="pageJump" type="number" min="1" onchange="goSessionPage(this.value)" /></label><button id="pageNext" data-i18n="nextPage" onclick="changeSessionPage(1)"></button><button id="pageLast" data-i18n="lastPage" onclick="goLastSessionPage()"></button></nav>
+        <nav id="pagination" class="pagination">
+          <button
+            id="pageFirst"
+            data-i18n="firstPage"
+            onclick="goSessionPage(1)"
+          ></button
+          ><button
+            id="pagePrevious"
+            data-i18n="previousPage"
+            onclick="changeSessionPage(-1)"
+          ></button
+          ><strong id="pageInfo"></strong
+          ><label
+            ><span data-i18n="jumpToPage"></span>
+            <input
+              id="pageJump"
+              type="number"
+              min="1"
+              onchange="goSessionPage(this.value)"
+              onkeydown="if(event.key==='Enter') goSessionPage(this.value)" /></label
+          ><button
+            id="pageNext"
+            data-i18n="nextPage"
+            onclick="changeSessionPage(1)"
+          ></button
+          ><button
+            id="pageLast"
+            data-i18n="lastPage"
+            onclick="goLastSessionPage()"
+          ></button>
+        </nav>
       </div>
     </div>
     <div id="requestView" class="route-page">
       <div class="route-shell">
-        <div class="drawer-head"><button class="back-button" data-i18n="backToSession" onclick="goSession()"></button></div>
-        <h2 id="requestTitle"></h2><p id="requestMeta" class="muted"></p><div id="requestDetail"></div>
+        <div class="drawer-head">
+          <button
+            class="back-button"
+            data-i18n="backToSession"
+            onclick="goSession()"
+          ></button>
+        </div>
+        <h2 id="requestTitle"></h2>
+        <p id="requestMeta" class="muted"></p>
+        <div id="requestDetail"></div>
       </div>
     </div>
-    <div id="subDetailView" class="route-page"><div class="route-shell"><div class="drawer-head"><button class="back-button" data-i18n="backToRequest" onclick="goRequest()"></button></div><h2 id="subDetailTitle"></h2><p id="subDetailMeta" class="muted"></p><div id="subDetail"></div></div></div>
+    <div id="subDetailView" class="route-page">
+      <div class="route-shell">
+        <div class="drawer-head">
+          <button
+            class="back-button"
+            data-i18n="backToRequest"
+            onclick="goRequest()"
+          ></button>
+        </div>
+        <h2 id="subDetailTitle"></h2>
+        <p id="subDetailMeta" class="muted"></p>
+        <div id="subDetail"></div>
+      </div>
+    </div>
     <div id="loading" class="loading-overlay" aria-live="polite">
-      <div class="panel loading-box"><div class="spinner"></div><h3 id="loadingStage"></h3><div class="muted" data-i18n="executingQuery"></div><pre id="loadingSQL" class="loading-sql"></pre></div>
+      <div class="panel loading-box">
+        <div class="spinner"></div>
+        <h3 id="loadingStage"></h3>
+        <div class="muted" data-i18n="executingQuery"></div>
+        <pre id="loadingSQL" class="loading-sql"></pre>
+      </div>
     </div>
     <div id="login" class="login">
       <div class="panel">
@@ -585,7 +896,8 @@
           toolDefinitions: "工具定义 {count} 项",
           technicalMetadata: "技术元信息",
           rawDiagnostics: "原始请求/响应（排障）",
-          diagnosticsSubtitle: "原始载荷仅在进入此页面后加载，适合定位协议、路由和上游异常。",
+          diagnosticsSubtitle:
+            "原始载荷仅在进入此页面后加载，适合定位协议、路由和上游异常。",
           viewRaw: "查看并复制",
           originalRequest: "客户端原始请求",
           upstreamRequest: "发送给上游的请求",
@@ -597,23 +909,31 @@
           toolInput: "调用参数",
           toolOutput: "执行结果",
           viewTool: "查看完整调用",
-          noToolOutput: "尚未在本次请求中找到对应结果；结果可能出现在下一次请求。",
+          noToolOutput:
+            "尚未在本次请求中找到对应结果；结果可能出现在下一次请求。",
           userPreview: "用户请求",
           assistantPreview: "助手响应",
           noReadableContent: "没有可直接阅读的文本内容",
           attachment: "多媒体附件",
           expandFull: "展开完整内容",
-          downloadReady: "下载链接已生成，30 分钟内可重复使用。如果浏览器没有自动保存文件，请点击：",
+          downloadReady:
+            "下载链接已生成，30 分钟内可重复使用。如果浏览器没有自动保存文件，请点击：",
           kindTurn: "普通请求",
           kindRetry: "重试请求",
           kindCompaction: "上下文压缩请求",
           kindHistorySnapshot: "归档接入时的历史快照",
           kindContextRebuild: "压缩后的上下文重建",
           kindToolContinuation: "工具结果续传",
-          historyItemsFolded: "已折叠 {count} 项历史上下文；本页只展示相对上一请求新增的内容。",
-          retryNoDelta: "本次请求与上一请求的输入完全相同，属于重试；未重复展示历史内容。",
+          kindPrewarm: "后台预热",
+          sessionHasCompaction: "包含压缩",
+          systemTask: "系统任务",
+          historyItemsFolded:
+            "已折叠 {count} 项历史上下文；本页只展示相对上一请求新增的内容。",
+          retryNoDelta:
+            "本次请求与上一请求的输入完全相同，属于重试；未重复展示历史内容。",
           viewSystem: "展开系统指令",
-          contentTruncated: "此项内容过长，完整内容请在原始载荷或工具详情中查看。",
+          contentTruncated:
+            "此项内容过长，完整内容请在原始载荷或工具详情中查看。",
         },
         en: {
           title: "Session Archive",
@@ -641,10 +961,12 @@
           sftFormat: "Post-training SFT JSONL",
           newestFirst: "Newest first",
           oldestFirst: "Oldest first",
-          executingQuery: "Parameterized SQL in progress (sensitive values omitted)",
+          executingQuery:
+            "Parameterized SQL in progress (sensitive values omitted)",
           loadingSessions: "Querying session list…",
           loadingSession: "Querying the session request index…",
-          loadingRequest: "Loading the full request, response and tool results on demand…",
+          loadingRequest:
+            "Loading the full request, response and tool results on demand…",
           loadingExport: "Preparing a reusable streaming download link…",
           firstPage: "First",
           previousPage: "Previous",
@@ -693,7 +1015,8 @@
           toolDefinitions: "Tool definitions: {count}",
           technicalMetadata: "Technical metadata",
           rawDiagnostics: "Raw request/response (diagnostics)",
-          diagnosticsSubtitle: "Raw payloads load only after opening this route and help diagnose protocol, routing, and upstream failures.",
+          diagnosticsSubtitle:
+            "Raw payloads load only after opening this route and help diagnose protocol, routing, and upstream failures.",
           viewRaw: "View and copy",
           originalRequest: "Original client request",
           upstreamRequest: "Request sent upstream",
@@ -705,30 +1028,41 @@
           toolInput: "Call arguments",
           toolOutput: "Execution result",
           viewTool: "View complete call",
-          noToolOutput: "No matching result was found in this request; it may appear in the next request.",
+          noToolOutput:
+            "No matching result was found in this request; it may appear in the next request.",
           userPreview: "User request",
           assistantPreview: "Assistant response",
           noReadableContent: "No directly readable text content",
           attachment: "Media attachment",
           expandFull: "Expand full content",
-          downloadReady: "The download link is ready and reusable for 30 minutes. If the browser does not save the file automatically, click:",
+          downloadReady:
+            "The download link is ready and reusable for 30 minutes. If the browser does not save the file automatically, click:",
           kindTurn: "Regular request",
           kindRetry: "Retry",
           kindCompaction: "Context compaction request",
           kindHistorySnapshot: "History snapshot at archive start",
           kindContextRebuild: "Context rebuilt after compaction",
           kindToolContinuation: "Tool result continuation",
-          historyItemsFolded: "{count} historical context items were folded. This page shows only content added since the previous request.",
-          retryNoDelta: "This input is identical to the previous request and is a retry; repeated history is not rendered again.",
+          kindPrewarm: "Background prewarm",
+          sessionHasCompaction: "Contains compaction",
+          systemTask: "System task",
+          historyItemsFolded:
+            "{count} historical context items were folded. This page shows only content added since the previous request.",
+          retryNoDelta:
+            "This input is identical to the previous request and is a retry; repeated history is not rendered again.",
           viewSystem: "Expand system instructions",
-          contentTruncated: "This item is long. Open the raw payload or tool detail to see the complete content.",
+          contentTruncated:
+            "This item is long. Open the raw payload or tool detail to see the complete content.",
         },
       };
-      var locale = /^zh/i.test(
-        document.documentElement.lang || navigator.language,
-      )
-        ? "zh"
-        : "en";
+      function languageHint() {
+        try {
+          if (parent !== window && parent.document.documentElement.lang)
+            return parent.document.documentElement.lang;
+        } catch (ignore) {}
+        return document.documentElement.lang || navigator.language;
+      }
+      var locale = /^zh/i.test(languageHint()) ? "zh" : "en";
       function t(key, values) {
         var text =
           (messages[locale] && messages[locale][key]) ||
@@ -740,11 +1074,7 @@
         return text;
       }
       function applyI18n() {
-        locale = /^zh/i.test(
-          document.documentElement.lang || navigator.language,
-        )
-          ? "zh"
-          : "en";
+        locale = /^zh/i.test(languageHint()) ? "zh" : "en";
         document.title = t("title");
         document.querySelectorAll("[data-i18n]").forEach(function (node) {
           node.textContent = t(node.dataset.i18n);
@@ -770,12 +1100,18 @@
         currentRequestID = "",
         currentRequestRecord = null;
       var detailSeenContent = new Set();
-      var fullTexts = {}, fullTextSequence = 0, loadingCount = 0;
+      var fullTexts = {},
+        fullTextSequence = 0,
+        loadingCount = 0;
       var sqlTemplates = {
-        sessions: "SELECT s.session_id, s.requests, s.first_at, s.last_at, s.key_id, s.model, s.project, s.summary\nFROM session_summaries s\nWHERE EXISTS (SELECT 1 FROM session_facets f WHERE f.session_id = s.session_id AND f.name = ? AND f.value = ?) …\nORDER BY s.last_at DESC LIMIT ?",
-        session: "SELECT request_id, trace_id, key_id, summary, requested_model, model, outcome, status_code, started_at, completed_at, facets_json\nFROM records\nWHERE session_id = ?\nORDER BY started_at LIMIT ? OFFSET ?",
-        request: "SELECT …, original_ref, upstream_ref, response_ref, metadata_json, facets_json\nFROM records\nWHERE request_id = ? LIMIT 1",
-        export: "SELECT request_id FROM records WHERE session_id = ? ORDER BY started_at, id\n-- CAS payloads are expanded and emitted incrementally as archive or SFT JSONL",
+        sessions:
+          "SELECT s.session_id, s.requests, s.first_at, s.last_at, s.key_id, s.model, s.project, s.summary\nFROM session_summaries s\nWHERE EXISTS (SELECT 1 FROM session_facets f WHERE f.session_id = s.session_id AND f.name = ? AND f.value = ?) …\nORDER BY s.last_at DESC LIMIT ?",
+        session:
+          "SELECT request_id, trace_id, key_id, summary, requested_model, model, outcome, status_code, started_at, completed_at, facets_json\nFROM records\nWHERE session_id = ?\nORDER BY started_at LIMIT ? OFFSET ?",
+        request:
+          "SELECT …, original_ref, upstream_ref, response_ref, metadata_json, facets_json\nFROM records\nWHERE request_id = ? LIMIT 1",
+        export:
+          "SELECT request_id FROM records WHERE session_id = ? ORDER BY started_at, id\n-- CAS payloads are expanded and emitted incrementally as archive or SFT JSONL",
       };
       var facetOrder = [
         "project.name",
@@ -793,6 +1129,7 @@
         "session.id",
         "conversation.id",
         "thread.id",
+        "thread.source",
         "turn.id",
         "window.id",
         "model.requested",
@@ -837,6 +1174,7 @@
         "session.id": "Session",
         "conversation.id": "Conversation",
         "thread.id": "Thread",
+        "thread.source": "任务来源",
         "turn.id": "Turn",
         "window.id": "窗口",
         "model.requested": "请求模型",
@@ -886,6 +1224,7 @@
         "session.id": "Session",
         "conversation.id": "Conversation",
         "thread.id": "Thread",
+        "thread.source": "Thread source",
         "turn.id": "Turn",
         "window.id": "Window",
         "model.requested": "Requested model",
@@ -921,6 +1260,11 @@
           "request.kind": {
             turn: locale === "zh" ? "普通对话" : "Conversation turn",
             compaction: locale === "zh" ? "上下文压缩" : "Context compaction",
+            prewarm: locale === "zh" ? "后台预热" : "Background prewarm",
+          },
+          "thread.source": {
+            system: locale === "zh" ? "系统任务" : "System task",
+            user: locale === "zh" ? "用户任务" : "User task",
           },
         };
         return (labels[name] && labels[name][value]) || value;
@@ -977,15 +1321,30 @@
       }
       function hideLoading() {
         loadingCount = Math.max(0, loadingCount - 1);
-        if (!loadingCount) document.getElementById("loading").classList.remove("open");
+        if (!loadingCount)
+          document.getElementById("loading").classList.remove("open");
       }
       async function api(path, stage, sql) {
         if (stage) showLoading(stage, sql);
-        try { return await hostApi("/v0/management/plugins/cpa-session-archive" + path); }
-        finally { if (stage) hideLoading(); }
+        try {
+          return await hostApi(
+            "/v0/management/plugins/cpa-session-archive" + path,
+          );
+        } finally {
+          if (stage) hideLoading();
+        }
+      }
+      function normalizeKeyHash(value) {
+        return String(value || "")
+          .trim()
+          .toLowerCase()
+          .replace(/^sha256:/, "");
       }
       function keyName(value) {
-        return keyAliases[value] || (value ? value.slice(0, 12) + "…" : "—");
+        return (
+          keyAliases[normalizeKeyHash(value)] ||
+          (value ? value.slice(0, 12) + "…" : "—")
+        );
       }
       function localTime(value) {
         var date = new Date(value);
@@ -1021,12 +1380,33 @@
               );
             })
             .join("");
-          try {
-            var aliases = await hostApi("/v0/management/api-key-aliases");
-            (aliases.items || []).forEach(function (item) {
-              keyAliases[item.apiKeyHash || item.api_key_hash] = item.alias;
-            });
-          } catch (ignore) {}
+          var aliasBases = [location.origin, session.base].filter(
+            function (value, index, all) {
+              return value && all.indexOf(value) === index;
+            },
+          );
+          for (
+            var aliasIndex = 0;
+            aliasIndex < aliasBases.length;
+            aliasIndex++
+          ) {
+            try {
+              var aliasResponse = await fetch(
+                aliasBases[aliasIndex] + "/v0/management/api-key-aliases",
+                {
+                  headers: { Authorization: "Bearer " + session.key },
+                },
+              );
+              if (!aliasResponse.ok) continue;
+              var aliases = await aliasResponse.json();
+              (aliases.items || []).forEach(function (item) {
+                keyAliases[
+                  normalizeKeyHash(item.apiKeyHash || item.api_key_hash)
+                ] = item.alias;
+              });
+              break;
+            } catch (ignore) {}
+          }
           facets = await api("/facets");
           renderFilters();
           await loadSessions();
@@ -1185,7 +1565,11 @@
           if (node.value) q.set(node.dataset.facet, node.value);
         });
         q.set("limit", document.getElementById("limit").value || 100);
-        var rows = await api("/sessions?" + q, t("loadingSessions"), sqlTemplates.sessions);
+        var rows = await api(
+          "/sessions?" + q,
+          t("loadingSessions"),
+          sqlTemplates.sessions,
+        );
         rows.forEach(function (row) {
           sessionsByID[row.session_id] = row;
         });
@@ -1199,6 +1583,28 @@
                 var meta = [row.project, row.session_id]
                   .filter(Boolean)
                   .join(" · ");
+                var sessionBadges = [];
+                if ((row.thread_sources || []).indexOf("system") >= 0)
+                  sessionBadges.push(
+                    '<span class="kind-badge">' +
+                      esc(t("systemTask")) +
+                      "</span>",
+                  );
+                if ((row.kinds || []).indexOf("compaction") >= 0)
+                  sessionBadges.push(
+                    '<span class="kind-badge compaction">' +
+                      esc(t("sessionHasCompaction")) +
+                      "</span>",
+                  );
+                else if (
+                  (row.kinds || []).length === 1 &&
+                  row.kinds[0] === "prewarm"
+                )
+                  sessionBadges.push(
+                    '<span class="kind-badge">' +
+                      esc(t("kindPrewarm")) +
+                      "</span>",
+                  );
                 return (
                   "<tr onclick=\"openSession('" +
                   esc(row.session_id) +
@@ -1207,6 +1613,7 @@
                   '">' +
                   esc(title) +
                   '</div><div class="conversation-meta">' +
+                  sessionBadges.join("") +
                   esc(meta) +
                   '</div></td><td><span class="key-pill" title="' +
                   esc(row.key_id || "") +
@@ -1264,19 +1671,26 @@
       async function loadSessionPage(pageNumber) {
         detailPage = Math.max(1, pageNumber || detailPage || 1);
         var baseOffset = (detailPage - 1) * detailPageSize;
-		var order = document.getElementById("sessionOrder").value || "desc";
-		var queryOffset = Math.max(0, baseOffset - 1), hasPrevious = baseOffset > 0;
+        var order = document.getElementById("sessionOrder").value || "desc";
+        var queryOffset = Math.max(0, baseOffset - 1),
+          hasPrevious = baseOffset > 0;
         var page = await api(
           "/sessions?id=" +
             encodeURIComponent(detailSessionID) +
-            "&limit=" + (detailPageSize + (hasPrevious ? 1 : 0)) + "&offset=" +
-            queryOffset + "&order=" + order +
+            "&limit=" +
+            (detailPageSize + (hasPrevious ? 1 : 0)) +
+            "&offset=" +
+            queryOffset +
+            "&order=" +
+            order +
             "&metadata_only=true",
-          t("loadingSession"), sqlTemplates.session,
+          t("loadingSession"),
+          sqlTemplates.session,
         );
         detailTotal = page.total;
-		var loadedRecords = page.records || [], previousRecord = hasPrevious ? loadedRecords.shift() : null;
-		detailRecords = loadedRecords.slice(0, detailPageSize);
+        var loadedRecords = page.records || [],
+          previousRecord = hasPrevious ? loadedRecords.shift() : null;
+        detailRecords = loadedRecords.slice(0, detailPageSize);
         if (detailRecords[0]) {
           var first = detailRecords[0];
           var selected = sessionsByID[detailSessionID] || {};
@@ -1289,42 +1703,124 @@
             selected.project ||
             t("untitled");
           document.getElementById("detailMeta").textContent =
-            keyName(first.key_id || selected.key_id) + " · " +
-            detailTotal + " " + t("records") + " · " +
+            keyName(first.key_id || selected.key_id) +
+            " · " +
+            detailTotal +
+            " " +
+            t("records") +
+            " · " +
             localTime(first.started_at);
         }
-        document.getElementById("detail").innerHTML =
-          detailRecords
-            .map(function (record, index) {
-			  var prior = index ? detailRecords[index - 1] : previousRecord;
-              return renderRequestSummary(record, baseOffset + index + 1, prior);
-            })
-            .join("");
+        document.getElementById("detail").innerHTML = detailRecords
+          .map(function (record, index) {
+            var prior = index ? detailRecords[index - 1] : previousRecord;
+            return renderRequestSummary(record, baseOffset + index + 1, prior);
+          })
+          .join("");
         var pages = Math.max(1, Math.ceil(detailTotal / detailPageSize));
-        document.getElementById("pageInfo").textContent = t("pageInfo",{page:detailPage,pages:pages,total:detailTotal});
+        document.getElementById("pageInfo").textContent = t("pageInfo", {
+          page: detailPage,
+          pages: pages,
+          total: detailTotal,
+        });
         document.getElementById("pagePrevious").disabled = detailPage <= 1;
         document.getElementById("pageNext").disabled = detailPage >= pages;
-		document.getElementById("pageFirst").disabled = detailPage <= 1;
-		document.getElementById("pageLast").disabled = detailPage >= pages;
-		document.getElementById("pageJump").value = detailPage;
-		document.getElementById("pageJump").max = pages;
-        document.getElementById("pagination").style.display = detailTotal ? "flex" : "none";
+        document.getElementById("pageFirst").disabled = detailPage <= 1;
+        document.getElementById("pageLast").disabled = detailPage >= pages;
+        document.getElementById("pageJump").value = detailPage;
+        document.getElementById("pageJump").max = pages;
+        document.getElementById("pagination").style.display = detailTotal
+          ? "flex"
+          : "none";
         lastDetail = detailRecords;
-        window.scrollTo(0,0);
+        window.scrollTo(0, 0);
       }
-      function changeSessionPage(delta) { loadSessionPage(detailPage + delta); }
-	  function goSessionPage(page) { var pages=Math.max(1,Math.ceil(detailTotal/detailPageSize)),value=Math.max(1,Math.min(pages,Number(page)||1));loadSessionPage(value); }
-	  function goLastSessionPage() { goSessionPage(Math.max(1,Math.ceil(detailTotal/detailPageSize))); }
+      function changeSessionPage(delta) {
+        loadSessionPage(detailPage + delta);
+      }
+      function goSessionPage(page) {
+        var pages = Math.max(1, Math.ceil(detailTotal / detailPageSize)),
+          value = Math.max(1, Math.min(pages, Number(page) || 1));
+        loadSessionPage(value);
+      }
+      function goLastSessionPage() {
+        goSessionPage(Math.max(1, Math.ceil(detailTotal / detailPageSize)));
+      }
       function renderRequestSummary(record, number, previous) {
-        var title = record.summary || record.requested_model || record.model || t("request") + " #" + number;
+        var title =
+          record.summary ||
+          record.requested_model ||
+          record.model ||
+          t("request") + " #" + number;
         var tools = ((record.facets || {})["tool.name"] || []).slice(0, 4);
         var responsePreview = record.response_preview || record.error || "";
-		var duplicate = previous && previous.summary && previous.summary === record.summary;
-		var retry = duplicate && record.outcome !== "succeeded";
-		var badge = retry ? '<span class="kind-badge retry">'+esc(t("kindRetry"))+'</span>' : duplicate ? '<span class="kind-badge">'+esc(t("kindToolContinuation"))+'</span>' : '';
-        return '<article class="panel request-list-item" onclick="openRequest(\'' + esc(record.request_id) + '\')"><div><div class="conversation-title">' + badge + '#' + number + ' · ' + esc(title) + '</div><div class="conversation-meta">' + esc([record.requested_model || record.model, keyName(record.key_id), tools.length ? t("toolRole") + ': ' + tools.join(", ") : ""].filter(Boolean).join(" · ")) + '</div><div class="request-snippet"><b>' + esc(t("userPreview")) + '：</b>' + esc(duplicate ? (retry ? t("retryNoDelta") : t("kindToolContinuation")) : title) + '</div>' + (responsePreview ? '<div class="response-snippet"><b>' + esc(t("assistantPreview")) + '：</b>' + esc(responsePreview) + '</div>' : '') + '</div><div class="muted ' + (record.outcome === "succeeded" ? "status-success" : "status-error") + '">' + esc(record.outcome + " · " + record.status_code + " · " + localTime(record.started_at)) + '</div></article>';
+        var duplicate =
+          previous && previous.summary && previous.summary === record.summary;
+        var retry = duplicate && record.outcome !== "succeeded";
+        var badge = retry
+          ? '<span class="kind-badge retry">' + esc(t("kindRetry")) + "</span>"
+          : duplicate
+            ? '<span class="kind-badge">' +
+              esc(t("kindToolContinuation")) +
+              "</span>"
+            : "";
+        return (
+          '<article class="panel request-list-item" onclick="openRequest(\'' +
+          esc(record.request_id) +
+          '\')"><div><div class="conversation-title">' +
+          badge +
+          "#" +
+          number +
+          " · " +
+          esc(title) +
+          '</div><div class="conversation-meta">' +
+          esc(
+            [
+              record.requested_model || record.model,
+              keyName(record.key_id),
+              tools.length ? t("toolRole") + ": " + tools.join(", ") : "",
+            ]
+              .filter(Boolean)
+              .join(" · "),
+          ) +
+          '</div><div class="request-snippet"><b>' +
+          esc(t("userPreview")) +
+          "：</b>" +
+          esc(
+            duplicate
+              ? retry
+                ? t("retryNoDelta")
+                : t("kindToolContinuation")
+              : title,
+          ) +
+          "</div>" +
+          (responsePreview
+            ? '<div class="response-snippet"><b>' +
+              esc(t("assistantPreview")) +
+              "：</b>" +
+              esc(responsePreview) +
+              "</div>"
+            : "") +
+          '</div><div class="muted ' +
+          (record.outcome === "succeeded" ? "status-success" : "status-error") +
+          '">' +
+          esc(
+            record.outcome +
+              " · " +
+              record.status_code +
+              " · " +
+              localTime(record.started_at),
+          ) +
+          "</div></article>"
+        );
       }
-      function openRequest(id) { location.hash = "#/sessions/" + encodeURIComponent(detailSessionID) + "/requests/" + encodeURIComponent(id); }
+      function openRequest(id) {
+        location.hash =
+          "#/sessions/" +
+          encodeURIComponent(detailSessionID) +
+          "/requests/" +
+          encodeURIComponent(id);
+      }
       async function showRequest(sessionID, requestID) {
         detailSessionID = sessionID;
         currentRequestID = requestID;
@@ -1333,54 +1829,201 @@
         document.getElementById("subDetailView").classList.remove("open");
         document.getElementById("requestView").classList.add("open");
         document.getElementById("requestDetail").innerHTML = "";
-        detailSeenContent = new Set(); fullTexts = {};
-		var view = await api("/request-view?id=" + encodeURIComponent(requestID), t("loadingRequest"), sqlTemplates.request);
-		currentRequestRecord = null;
-		document.getElementById("requestTitle").textContent = view.summary || view.requested_model || view.model || t("request");
-		document.getElementById("requestMeta").textContent = [keyName(view.key_id), view.requested_model || view.model, localTime(view.started_at)].filter(Boolean).join(" · ");
-		document.getElementById("requestDetail").innerHTML = renderTimelineView(view);
+        detailSeenContent = new Set();
+        fullTexts = {};
+        var view = await api(
+          "/request-view?id=" + encodeURIComponent(requestID),
+          t("loadingRequest"),
+          sqlTemplates.request,
+        );
+        currentRequestRecord = null;
+        document.getElementById("requestTitle").textContent =
+          view.summary || view.requested_model || view.model || t("request");
+        document.getElementById("requestMeta").textContent = [
+          keyName(view.key_id),
+          view.requested_model || view.model,
+          localTime(view.started_at),
+        ]
+          .filter(Boolean)
+          .join(" · ");
+        document.getElementById("requestDetail").innerHTML =
+          renderTimelineView(view);
       }
-	  function kindLabel(kind){var keys={turn:"kindTurn",retry:"kindRetry",compaction:"kindCompaction",history_snapshot:"kindHistorySnapshot",context_rebuild:"kindContextRebuild",tool_continuation:"kindToolContinuation"};return t(keys[kind]||"kindTurn");}
-	  function renderTimelineView(view){
-		var context=[];
-		if(view.history_items) context.push(t("historyItemsFolded",{count:view.history_items}));
-		if(view.system_chars) context.push('<button onclick="openRaw(\'instructions\')">'+esc(t("viewSystem")+' · '+t("systemContext",{chars:view.system_chars}))+'</button>');
-		if(view.tool_definitions) context.push(esc(t("toolDefinitions",{count:view.tool_definitions})));
-		var entries=(view.entries||[]).map(renderTimelineEntry).join("");
-		if(!entries&&view.kind==="retry") entries='<div class="context-summary">'+esc(t("retryNoDelta"))+'</div>';
-		if(!entries) entries='<div class="context-summary">'+esc(t("noReadableContent"))+'</div>';
-		return '<article class="panel request-card"><div class="request-head"><div><span class="kind-badge '+esc(view.kind)+'">'+esc(kindLabel(view.kind))+'</span><b>'+esc(view.requested_model||view.model||"")+'</b></div><span>'+esc((view.outcome||"")+" · "+(view.status_code||"")+" · "+localTime(view.started_at))+'</span></div>'+
-		  (context.length?'<div class="context-summary">'+context.join(' · ')+'</div>':'')+
-		  '<div class="conversation-stream">'+entries+'</div>'+renderRawLinks()+'</article>';
-	  }
-	  function renderTimelineEntry(entry){
-		var role=entry.role==="tool_call"||entry.role==="tool_result"?"tool":entry.role;
-		var html=renderMessage(role,entry.text||"",entry.label||entry.call_id||"");
-		if((entry.role==="tool_call"||entry.role==="tool_result")&&entry.call_id) html+='<button onclick="openToolCall(\''+esc(entry.call_id)+'\')">'+esc(t("viewTool"))+'</button>';
-		if(entry.truncated) html+='<div class="context-summary">'+esc(t("contentTruncated"))+'</div>';
-		return html;
-	  }
-	  function renderRawLinks(){
-		var parts=[{id:"request",label:t("originalRequest")},{id:"upstream",label:t("upstreamRequest")},{id:"response",label:t("originalResponse")}];
-		return '<section><h3>'+esc(t("rawDiagnostics"))+'</h3><p class="muted">'+esc(t("diagnosticsSubtitle"))+'</p><div class="diagnostic-grid">'+parts.map(function(part){return '<div class="diagnostic-card"><h3>'+esc(part.label)+'</h3><button onclick="openRaw(\''+part.id+'\')">'+esc(t("viewRaw"))+'</button></div>';}).join('')+'</div></section>';
-	  }
+      function kindLabel(kind) {
+        var keys = {
+          turn: "kindTurn",
+          retry: "kindRetry",
+          compaction: "kindCompaction",
+          prewarm: "kindPrewarm",
+          history_snapshot: "kindHistorySnapshot",
+          context_rebuild: "kindContextRebuild",
+          tool_continuation: "kindToolContinuation",
+        };
+        return t(keys[kind] || "kindTurn");
+      }
+      function renderTimelineView(view) {
+        var context = [];
+        if (view.history_items)
+          context.push(t("historyItemsFolded", { count: view.history_items }));
+        if (view.system_chars)
+          context.push(
+            "<button onclick=\"openRaw('instructions')\">" +
+              esc(
+                t("viewSystem") +
+                  " · " +
+                  t("systemContext", { chars: view.system_chars }),
+              ) +
+              "</button>",
+          );
+        if (view.tool_definitions)
+          context.push(
+            esc(t("toolDefinitions", { count: view.tool_definitions })),
+          );
+        var entries = (view.entries || []).map(renderTimelineEntry).join("");
+        if (!entries && view.kind === "retry")
+          entries =
+            '<div class="context-summary">' + esc(t("retryNoDelta")) + "</div>";
+        if (!entries)
+          entries =
+            '<div class="context-summary">' +
+            esc(t("noReadableContent")) +
+            "</div>";
+        return (
+          '<article class="panel request-card"><div class="request-head"><div><span class="kind-badge ' +
+          esc(view.kind) +
+          '">' +
+          esc(kindLabel(view.kind)) +
+          "</span><b>" +
+          esc(view.requested_model || view.model || "") +
+          "</b></div><span>" +
+          esc(
+            (view.outcome || "") +
+              " · " +
+              (view.status_code || "") +
+              " · " +
+              localTime(view.started_at),
+          ) +
+          "</span></div>" +
+          (context.length
+            ? '<div class="context-summary">' + context.join(" · ") + "</div>"
+            : "") +
+          '<div class="conversation-stream">' +
+          entries +
+          "</div>" +
+          renderRawLinks() +
+          "</article>"
+        );
+      }
+      function renderTimelineEntry(entry) {
+        var role =
+          entry.role === "tool_call" || entry.role === "tool_result"
+            ? "tool"
+            : entry.role;
+        var html = renderMessage(
+          role,
+          entry.text || "",
+          entry.label || entry.call_id || "",
+        );
+        if (
+          (entry.role === "tool_call" || entry.role === "tool_result") &&
+          entry.call_id
+        )
+          html +=
+            "<button onclick=\"openToolCall('" +
+            esc(entry.call_id) +
+            "')\">" +
+            esc(t("viewTool")) +
+            "</button>";
+        if (entry.truncated)
+          html +=
+            '<div class="context-summary">' +
+            esc(t("contentTruncated")) +
+            "</div>";
+        return html;
+      }
+      function renderRawLinks() {
+        var parts = [
+          { id: "request", label: t("originalRequest") },
+          { id: "upstream", label: t("upstreamRequest") },
+          { id: "response", label: t("originalResponse") },
+        ];
+        return (
+          "<section><h3>" +
+          esc(t("rawDiagnostics")) +
+          '</h3><p class="muted">' +
+          esc(t("diagnosticsSubtitle")) +
+          '</p><div class="diagnostic-grid">' +
+          parts
+            .map(function (part) {
+              return (
+                '<div class="diagnostic-card"><h3>' +
+                esc(part.label) +
+                "</h3><button onclick=\"openRaw('" +
+                part.id +
+                "')\">" +
+                esc(t("viewRaw")) +
+                "</button></div>"
+              );
+            })
+            .join("") +
+          "</div></section>"
+        );
+      }
       async function downloadExport(scope) {
-        var format = document.getElementById(scope === "all" ? "allExportFormat" : "sessionExportFormat").value || "archive";
+        var format =
+          document.getElementById(
+            scope === "all" ? "allExportFormat" : "sessionExportFormat",
+          ).value || "archive";
         var popup = null;
-        try { popup = window.open("about:blank", "_blank"); } catch (e) {}
+        try {
+          popup = window.open("about:blank", "_blank");
+        } catch (e) {}
         showLoading(t("loadingExport"), sqlTemplates.export);
         try {
-          var query = new URLSearchParams({scope:scope,format:format});
-          if (scope === "session") query.set("id",detailSessionID);
-          var response = await fetch(session.base + "/v0/management/plugins/cpa-session-archive/export?" + query, { headers: { Authorization: "Bearer " + session.key } });
-          if (!response.ok) throw Error("HTTP " + response.status + ": " + await response.text());
-		  var ticket = await response.json(), url = new URL(ticket.url, session.base).href;
-		  var notice=document.getElementById(scope === "all" ? "allDownloadNotice" : "downloadNotice");
-		  if(notice){notice.innerHTML='<div>'+esc(t("downloadReady"))+'</div><a href="'+esc(url)+'" target="_blank" rel="noopener">'+esc(ticket.filename||url)+'</a>';notice.classList.add("open");}
+          var query = new URLSearchParams({ scope: scope, format: format });
+          if (scope === "session") query.set("id", detailSessionID);
+          var response = await fetch(
+            session.base +
+              "/v0/management/plugins/cpa-session-archive/export?" +
+              query,
+            { headers: { Authorization: "Bearer " + session.key } },
+          );
+          if (!response.ok)
+            throw Error(
+              "HTTP " + response.status + ": " + (await response.text()),
+            );
+          var ticket = await response.json(),
+            url = new URL(ticket.url, session.base).href;
+          var notice = document.getElementById(
+            scope === "all" ? "allDownloadNotice" : "downloadNotice",
+          );
+          if (notice) {
+            notice.innerHTML =
+              "<div>" +
+              esc(t("downloadReady")) +
+              '</div><a href="' +
+              esc(url) +
+              '" target="_blank" rel="noopener">' +
+              esc(ticket.filename || url) +
+              "</a>";
+            notice.classList.add("open");
+          }
           if (popup) popup.location.replace(url);
-          else { var link=document.createElement("a"); link.href=url; link.target="_blank"; link.rel="noopener"; document.body.appendChild(link); link.click(); link.remove(); }
-        } catch (error) { if (popup) popup.close(); alert(error.message || error); }
-        finally { hideLoading(); }
+          else {
+            var link = document.createElement("a");
+            link.href = url;
+            link.target = "_blank";
+            link.rel = "noopener";
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+          }
+        } catch (error) {
+          if (popup) popup.close();
+          alert(error.message || error);
+        } finally {
+          hideLoading();
+        }
       }
       function renderRecord(record, number) {
         var request = decode64(record.original_request),
@@ -1401,7 +2044,7 @@
           record.status_code +
           " · " +
           esc(localTime(record.started_at)) +
-          '</span></div>' +
+          "</span></div>" +
           metadata.primary +
           requestView.context +
           '<div class="conversation-stream">' +
@@ -1409,182 +2052,613 @@
           responseView +
           (requestView.html || responseView
             ? ""
-            : '<div class="context-summary">' + t("noReadableContent") + "</div>") +
+            : '<div class="context-summary">' +
+              t("noReadableContent") +
+              "</div>") +
           "</div>" +
-          metadata.details + renderToolOverview(record, requestObject, responseObject) + renderRawOverview(record, request, response) + "</article>"
+          metadata.details +
+          renderToolOverview(record, requestObject, responseObject) +
+          renderRawOverview(record, request, response) +
+          "</article>"
         );
       }
-      function retainFullText(text) { var id = "full-" + (++fullTextSequence); fullTexts[id] = text; return id; }
+      function retainFullText(text) {
+        var id = "full-" + ++fullTextSequence;
+        fullTexts[id] = text;
+        return id;
+      }
       function expandFullText(id, button) {
         var target = button.nextElementSibling;
-        target.textContent = fullTexts[id] || ""; target.style.display = "block"; button.remove(); delete fullTexts[id];
+        target.textContent = fullTexts[id] || "";
+        target.style.display = "block";
+        button.remove();
+        delete fullTexts[id];
       }
       function renderRawOverview(record, request, response) {
-        var upstream=decode64(record.upstream_request);
-        var parts=[{id:"request",label:t("originalRequest"),size:new Blob([request]).size},{id:"upstream",label:t("upstreamRequest"),size:new Blob([upstream]).size},{id:"response",label:t("originalResponse"),size:new Blob([response]).size}];
-        return '<section><h3>'+esc(t("rawDiagnostics"))+'</h3><p class="muted">'+esc(t("diagnosticsSubtitle"))+'</p><div class="diagnostic-grid">'+parts.map(function(part){return '<div class="diagnostic-card"><h3>'+esc(part.label)+'</h3><p class="muted">'+esc(t("bytes",{count:part.size}))+'</p><button onclick="openRaw(\''+part.id+'\')">'+esc(t("viewRaw"))+'</button></div>';}).join('')+'</div></section>';
+        var upstream = decode64(record.upstream_request);
+        var parts = [
+          {
+            id: "request",
+            label: t("originalRequest"),
+            size: new Blob([request]).size,
+          },
+          {
+            id: "upstream",
+            label: t("upstreamRequest"),
+            size: new Blob([upstream]).size,
+          },
+          {
+            id: "response",
+            label: t("originalResponse"),
+            size: new Blob([response]).size,
+          },
+        ];
+        return (
+          "<section><h3>" +
+          esc(t("rawDiagnostics")) +
+          '</h3><p class="muted">' +
+          esc(t("diagnosticsSubtitle")) +
+          '</p><div class="diagnostic-grid">' +
+          parts
+            .map(function (part) {
+              return (
+                '<div class="diagnostic-card"><h3>' +
+                esc(part.label) +
+                '</h3><p class="muted">' +
+                esc(t("bytes", { count: part.size })) +
+                "</p><button onclick=\"openRaw('" +
+                part.id +
+                "')\">" +
+                esc(t("viewRaw")) +
+                "</button></div>"
+              );
+            })
+            .join("") +
+          "</div></section>"
+        );
       }
       function renderToolOverview(record, requestObject, responseObject) {
-        var entries=extractToolEntries(requestObject,responseObject);
-        if(!entries.length) return "";
-        return '<section><h3>'+esc(t("toolCallsAndResults"))+'</h3><div class="tool-grid">'+entries.map(function(entry,index){var preview=entry.output||entry.arguments||""; return '<div class="tool-card"><h3>'+esc(entry.name||t("toolRole"))+'</h3><p class="muted">'+esc(entry.callID||"")+'</p><p class="request-snippet">'+esc(preview.slice(0,260))+(preview.length>260?'…':'')+'</p><button onclick="openTool('+index+')">'+esc(t("viewTool"))+'</button></div>';}).join('')+'</div></section>';
+        var entries = extractToolEntries(requestObject, responseObject);
+        if (!entries.length) return "";
+        return (
+          "<section><h3>" +
+          esc(t("toolCallsAndResults")) +
+          '</h3><div class="tool-grid">' +
+          entries
+            .map(function (entry, index) {
+              var preview = entry.output || entry.arguments || "";
+              return (
+                '<div class="tool-card"><h3>' +
+                esc(entry.name || t("toolRole")) +
+                '</h3><p class="muted">' +
+                esc(entry.callID || "") +
+                '</p><p class="request-snippet">' +
+                esc(preview.slice(0, 260)) +
+                (preview.length > 260 ? "…" : "") +
+                '</p><button onclick="openTool(' +
+                index +
+                ')">' +
+                esc(t("viewTool")) +
+                "</button></div>"
+              );
+            })
+            .join("") +
+          "</div></section>"
+        );
       }
-      function extractToolEntries(requestObject,responseObject) {
-		return extractToolEntriesFromValues([requestObject,responseObject]);
-	  }
+      function extractToolEntries(requestObject, responseObject) {
+        return extractToolEntriesFromValues([requestObject, responseObject]);
+      }
       function extractToolEntriesFromValues(values) {
-        var entries=[], byID={}, seen={};
-        function get(id,name){var key=id||('anonymous:'+name+':'+entries.length); if(byID[key]) return byID[key]; var item={callID:id||"",name:name||"",arguments:"",output:""}; byID[key]=item; entries.push(item); return item;}
-        function walk(value){
-          if(value==null) return;
-          if(Array.isArray(value)){value.forEach(walk);return;}
-          if(typeof value!=="object") return;
-          var type=String(value.type||"").toLowerCase(), id=String(value.call_id||value.tool_call_id||value.id||""), name=String(value.name||"");
-          if(type==="function_call"||type==="custom_tool_call"){var call=get(id,name); call.arguments=contentText(value.arguments||value.input||value.content);}
-          if(type==="function_call_output"||type==="custom_tool_call_output"){var result=get(id,name); result.output=contentText(value.output||value.content);}
-          if(Array.isArray(value.tool_calls)){value.tool_calls.forEach(function(raw){var fn=raw.function||{}; var call=get(String(raw.id||""),String(fn.name||raw.name||"")); call.arguments=contentText(fn.arguments||raw.arguments||"");});}
-          if(String(value.role||"").toLowerCase()==="tool"){var result=get(id,name); result.output=contentText(value.content||value.output);}
-          Object.keys(value).forEach(function(key){if(key!=="tools"&&key!=="tool_calls") walk(value[key]);});
+        var entries = [],
+          byID = {},
+          seen = {};
+        function get(id, name) {
+          var key = id || "anonymous:" + name + ":" + entries.length;
+          if (byID[key]) return byID[key];
+          var item = {
+            callID: id || "",
+            name: name || "",
+            arguments: "",
+            output: "",
+          };
+          byID[key] = item;
+          entries.push(item);
+          return item;
         }
-		(values||[]).forEach(walk);
-        return entries.filter(function(entry){var key=[entry.callID,entry.name,entry.arguments,entry.output].join("\n"); if(seen[key]) return false; seen[key]=true; return entry.arguments||entry.output;});
+        function walk(value) {
+          if (value == null) return;
+          if (Array.isArray(value)) {
+            value.forEach(walk);
+            return;
+          }
+          if (typeof value !== "object") return;
+          var type = String(value.type || "").toLowerCase(),
+            id = String(value.call_id || value.tool_call_id || value.id || ""),
+            name = String(value.name || "");
+          if (type === "function_call" || type === "custom_tool_call") {
+            var call = get(id, name);
+            call.arguments = contentText(
+              value.arguments || value.input || value.content,
+            );
+          }
+          if (
+            type === "function_call_output" ||
+            type === "custom_tool_call_output"
+          ) {
+            var result = get(id, name);
+            result.output = contentText(value.output || value.content);
+          }
+          if (Array.isArray(value.tool_calls)) {
+            value.tool_calls.forEach(function (raw) {
+              var fn = raw.function || {};
+              var call = get(
+                String(raw.id || ""),
+                String(fn.name || raw.name || ""),
+              );
+              call.arguments = contentText(fn.arguments || raw.arguments || "");
+            });
+          }
+          if (String(value.role || "").toLowerCase() === "tool") {
+            var result = get(id, name);
+            result.output = contentText(value.content || value.output);
+          }
+          Object.keys(value).forEach(function (key) {
+            if (key !== "tools" && key !== "tool_calls") walk(value[key]);
+          });
+        }
+        (values || []).forEach(walk);
+        return entries.filter(function (entry) {
+          var key = [
+            entry.callID,
+            entry.name,
+            entry.arguments,
+            entry.output,
+          ].join("\n");
+          if (seen[key]) return false;
+          seen[key] = true;
+          return entry.arguments || entry.output;
+        });
       }
-      function openRaw(part){location.hash="#/sessions/"+encodeURIComponent(detailSessionID)+"/requests/"+encodeURIComponent(currentRequestID)+"/raw/"+part;}
-      function openTool(index){location.hash="#/sessions/"+encodeURIComponent(detailSessionID)+"/requests/"+encodeURIComponent(currentRequestID)+"/tools/"+index;}
-	  function openToolCall(callID){openTool(encodeURIComponent(callID));}
-      async function ensureRequestRecord(requestID){if(currentRequestRecord&&currentRequestRecord.request_id===requestID)return currentRequestRecord; currentRequestRecord=await api("/requests?id="+encodeURIComponent(requestID),t("loadingRequest"),sqlTemplates.request); currentRequestID=requestID; return currentRequestRecord;}
-      async function showRawDetail(sessionID,requestID,part){
-        detailSessionID=sessionID; currentRequestID=requestID; var record=await ensureRequestRecord(requestID), labels={request:t("originalRequest"),upstream:t("upstreamRequest"),response:t("originalResponse")};
-		var encoded=part==="request"||part==="instructions"?record.original_request:part==="upstream"?record.upstream_request:record.response, text=decode64(encoded);
-		if(part==="instructions"){var root=parsePayload(text);text=root&&typeof root.instructions==="string"?root.instructions:"";labels.instructions=t("systemContext",{chars:text.length});}
-		var pretty=part==="instructions"?text:prettyPayload(text);
-        showSubDetail(); document.getElementById("subDetailTitle").textContent=labels[part]||t("rawDiagnostics"); document.getElementById("subDetailMeta").textContent=t("bytes",{count:new Blob([text]).size})+" · "+requestID;
-        var id=retainFullText(pretty); document.getElementById("subDetail").innerHTML='<div class="diagnostic-toolbar"><span class="muted">'+esc(t("diagnosticsSubtitle"))+'</span><button onclick="copyFullText(\''+id+'\',this)">'+esc(t("copy"))+'</button></div>'+lazyPre(pretty,id);
+      function openRaw(part) {
+        location.hash =
+          "#/sessions/" +
+          encodeURIComponent(detailSessionID) +
+          "/requests/" +
+          encodeURIComponent(currentRequestID) +
+          "/raw/" +
+          part;
       }
-      async function showToolDetail(sessionID,requestID,index){
-		detailSessionID=sessionID; currentRequestID=requestID; var record=await ensureRequestRecord(requestID), entries=extractToolEntries(parsePayload(decode64(record.original_request)),parsePayload(decode64(record.response))), selector=decodeURIComponent(String(index)), entry=/^\d+$/.test(selector)?entries[Number(selector)]:entries.find(function(candidate){return candidate.callID===selector;});
-		if(entry && !entry.output && entry.callID){
-		  var contextRecords=await api("/request-context?id="+encodeURIComponent(requestID)+"&limit=16",t("loadingRequest"),sqlTemplates.request);
-		  var values=[];
-		  (contextRecords||[]).forEach(function(item){values.push(parsePayload(decode64(item.original_request)));values.push(parsePayload(decode64(item.response)));});
-		  var contextEntries=extractToolEntriesFromValues(values), matched=contextEntries.find(function(candidate){return candidate.callID===entry.callID;});
-		  if(matched) entry=matched;
-		}
-        showSubDetail(); document.getElementById("subDetailTitle").textContent=(entry&&entry.name)||t("toolCallsAndResults"); document.getElementById("subDetailMeta").textContent=(entry&&entry.callID)||requestID;
-        if(!entry){document.getElementById("subDetail").innerHTML='<div class="empty">'+esc(t("noReadableContent"))+'</div>';return;}
-        var input=prettyPayload(entry.arguments),output=prettyPayload(entry.output),inputID=retainFullText(input),outputID=retainFullText(output); document.getElementById("subDetail").innerHTML='<div class="tool-grid"><section class="tool-card"><h3>'+esc(t("toolInput"))+'</h3>'+lazyPre(input,inputID)+'</section><section class="tool-card"><h3>'+esc(t("toolOutput"))+'</h3>'+(output?lazyPre(output,outputID):'<p class="muted">'+esc(t("noToolOutput"))+'</p>')+'</section></div>';
+      function openTool(index) {
+        location.hash =
+          "#/sessions/" +
+          encodeURIComponent(detailSessionID) +
+          "/requests/" +
+          encodeURIComponent(currentRequestID) +
+          "/tools/" +
+          index;
       }
-      function showSubDetail(){document.getElementById("listView").style.display="none";document.getElementById("drawer").classList.remove("open");document.getElementById("requestView").classList.remove("open");document.getElementById("subDetailView").classList.add("open");window.scrollTo(0,0);}
-      function prettyPayload(text){if(!text)return "";try{return JSON.stringify(JSON.parse(text),null,2);}catch(e){return text;}}
-      function lazyPre(text,id){var limit=100000,preview=text.slice(0,limit);return '<pre class="diagnostic-content">'+esc(preview)+(text.length>limit?'\n…':'')+'</pre>'+(text.length>limit?'<button onclick="expandDiagnostic(\''+id+'\',this)">'+esc(t("expandFull"))+'</button>':'');}
-      function expandDiagnostic(id,button){var pre=button.previousElementSibling;pre.textContent=fullTexts[id]||"";button.remove();}
-      async function copyFullText(id,button){try{await navigator.clipboard.writeText(fullTexts[id]||"");button.textContent=t("copied");}catch(e){}}
+      function openToolCall(callID) {
+        openTool(encodeURIComponent(callID));
+      }
+      async function ensureRequestRecord(requestID) {
+        if (
+          currentRequestRecord &&
+          currentRequestRecord.request_id === requestID
+        )
+          return currentRequestRecord;
+        currentRequestRecord = await api(
+          "/requests?id=" + encodeURIComponent(requestID),
+          t("loadingRequest"),
+          sqlTemplates.request,
+        );
+        currentRequestID = requestID;
+        return currentRequestRecord;
+      }
+      async function showRawDetail(sessionID, requestID, part) {
+        detailSessionID = sessionID;
+        currentRequestID = requestID;
+        var record = await ensureRequestRecord(requestID),
+          labels = {
+            request: t("originalRequest"),
+            upstream: t("upstreamRequest"),
+            response: t("originalResponse"),
+          };
+        var encoded =
+            part === "request" || part === "instructions"
+              ? record.original_request
+              : part === "upstream"
+                ? record.upstream_request
+                : record.response,
+          text = decode64(encoded);
+        if (part === "instructions") {
+          var root = parsePayload(text);
+          text =
+            root && typeof root.instructions === "string"
+              ? root.instructions
+              : "";
+          labels.instructions = t("systemContext", { chars: text.length });
+        }
+        var pretty = part === "instructions" ? text : prettyPayload(text);
+        showSubDetail();
+        document.getElementById("subDetailTitle").textContent =
+          labels[part] || t("rawDiagnostics");
+        document.getElementById("subDetailMeta").textContent =
+          t("bytes", { count: new Blob([text]).size }) + " · " + requestID;
+        var id = retainFullText(pretty);
+        document.getElementById("subDetail").innerHTML =
+          '<div class="diagnostic-toolbar"><span class="muted">' +
+          esc(t("diagnosticsSubtitle")) +
+          "</span><button onclick=\"copyFullText('" +
+          id +
+          "',this)\">" +
+          esc(t("copy")) +
+          "</button></div>" +
+          lazyPre(pretty, id);
+      }
+      async function showToolDetail(sessionID, requestID, index) {
+        detailSessionID = sessionID;
+        currentRequestID = requestID;
+        var record = await ensureRequestRecord(requestID),
+          entries = extractToolEntries(
+            parsePayload(decode64(record.original_request)),
+            parsePayload(decode64(record.response)),
+          ),
+          selector = decodeURIComponent(String(index)),
+          entry = /^\d+$/.test(selector)
+            ? entries[Number(selector)]
+            : entries.find(function (candidate) {
+                return candidate.callID === selector;
+              });
+        if (entry && !entry.output && entry.callID) {
+          var contextRecords = await api(
+            "/request-context?id=" +
+              encodeURIComponent(requestID) +
+              "&limit=16",
+            t("loadingRequest"),
+            sqlTemplates.request,
+          );
+          var values = [];
+          (contextRecords || []).forEach(function (item) {
+            values.push(parsePayload(decode64(item.original_request)));
+            values.push(parsePayload(decode64(item.response)));
+          });
+          var contextEntries = extractToolEntriesFromValues(values),
+            matched = contextEntries.find(function (candidate) {
+              return candidate.callID === entry.callID;
+            });
+          if (matched) entry = matched;
+        }
+        showSubDetail();
+        document.getElementById("subDetailTitle").textContent =
+          (entry && entry.name) || t("toolCallsAndResults");
+        document.getElementById("subDetailMeta").textContent =
+          (entry && entry.callID) || requestID;
+        if (!entry) {
+          document.getElementById("subDetail").innerHTML =
+            '<div class="empty">' + esc(t("noReadableContent")) + "</div>";
+          return;
+        }
+        var input = prettyPayload(entry.arguments),
+          output = prettyPayload(entry.output),
+          inputID = retainFullText(input),
+          outputID = retainFullText(output);
+        document.getElementById("subDetail").innerHTML =
+          '<div class="tool-grid"><section class="tool-card"><h3>' +
+          esc(t("toolInput")) +
+          "</h3>" +
+          lazyPre(input, inputID) +
+          '</section><section class="tool-card"><h3>' +
+          esc(t("toolOutput")) +
+          "</h3>" +
+          (output
+            ? lazyPre(output, outputID)
+            : '<p class="muted">' + esc(t("noToolOutput")) + "</p>") +
+          "</section></div>";
+      }
+      function showSubDetail() {
+        document.getElementById("listView").style.display = "none";
+        document.getElementById("drawer").classList.remove("open");
+        document.getElementById("requestView").classList.remove("open");
+        document.getElementById("subDetailView").classList.add("open");
+        window.scrollTo(0, 0);
+      }
+      function prettyPayload(text) {
+        if (!text) return "";
+        try {
+          return JSON.stringify(JSON.parse(text), null, 2);
+        } catch (e) {
+          return text;
+        }
+      }
+      function lazyPre(text, id) {
+        var limit = 100000,
+          preview = text.slice(0, limit);
+        return (
+          '<pre class="diagnostic-content">' +
+          esc(preview) +
+          (text.length > limit ? "\n…" : "") +
+          "</pre>" +
+          (text.length > limit
+            ? "<button onclick=\"expandDiagnostic('" +
+              id +
+              "',this)\">" +
+              esc(t("expandFull")) +
+              "</button>"
+            : "")
+        );
+      }
+      function expandDiagnostic(id, button) {
+        var pre = button.previousElementSibling;
+        pre.textContent = fullTexts[id] || "";
+        button.remove();
+      }
+      async function copyFullText(id, button) {
+        try {
+          await navigator.clipboard.writeText(fullTexts[id] || "");
+          button.textContent = t("copied");
+        } catch (e) {}
+      }
       function parsePayload(text) {
         if (!text) return null;
-        try { return JSON.parse(text); } catch (e) { return null; }
+        try {
+          return JSON.parse(text);
+        } catch (e) {
+          return null;
+        }
       }
       function readableRequest(root) {
         if (!root || typeof root !== "object") return { html: "", context: "" };
-        var entries = [], hidden = 0, context = [];
+        var entries = [],
+          hidden = 0,
+          context = [];
         collectSemantic(root.input || root.messages || [], "user", entries);
         if (typeof root.instructions === "string" && root.instructions.length)
           context.push(t("systemContext", { chars: root.instructions.length }));
         if (Array.isArray(root.tools) && root.tools.length)
           context.push(t("toolDefinitions", { count: root.tools.length }));
-        var html = entries.map(function (entry) {
-          var key = entry.role + "\n" + entry.text;
-          if (detailSeenContent.has(key)) { hidden++; return ""; }
-          detailSeenContent.add(key);
-          return renderMessage(entry.role, entry.text, entry.label);
-        }).join("");
+        var html = entries
+          .map(function (entry) {
+            var key = entry.role + "\n" + entry.text;
+            if (detailSeenContent.has(key)) {
+              hidden++;
+              return "";
+            }
+            detailSeenContent.add(key);
+            return renderMessage(entry.role, entry.text, entry.label);
+          })
+          .join("");
         if (hidden) context.push(t("contextFolded", { count: hidden }));
         return {
           html: html,
           context: context.length
-            ? '<div class="context-summary">' + esc(context.join(" · ")) + "</div>"
+            ? '<div class="context-summary">' +
+              esc(context.join(" · ")) +
+              "</div>"
             : "",
         };
       }
       function readableResponse(root, raw) {
         var entries = [];
         if (root && typeof root === "object") {
-          var payload = root.type === "response.completed" && root.response ? root.response : root;
+          var payload =
+            root.type === "response.completed" && root.response
+              ? root.response
+              : root;
           collectSemantic(payload.output || payload, "assistant", entries);
         } else if (raw) {
-          var deltas = [], match, pattern = /"delta":"((?:\\.|[^"\\])*)"/g;
+          var deltas = [],
+            match,
+            pattern = /"delta":"((?:\\.|[^"\\])*)"/g;
           while ((match = pattern.exec(raw)) && deltas.length < 5000) {
-            try { deltas.push(JSON.parse('"' + match[1] + '"')); } catch (e) {}
+            try {
+              deltas.push(JSON.parse('"' + match[1] + '"'));
+            } catch (e) {}
           }
-          if (deltas.length) entries.push({ role: "assistant", text: deltas.join(""), label: "" });
+          if (deltas.length)
+            entries.push({
+              role: "assistant",
+              text: deltas.join(""),
+              label: "",
+            });
         }
-        return entries.map(function (entry) {
-          return renderMessage(entry.role, entry.text, entry.label);
-        }).join("");
+        return entries
+          .map(function (entry) {
+            return renderMessage(entry.role, entry.text, entry.label);
+          })
+          .join("");
       }
       function collectSemantic(value, fallbackRole, out) {
         if (value == null) return;
         if (Array.isArray(value)) {
-          value.forEach(function (item) { collectSemantic(item, fallbackRole, out); });
+          value.forEach(function (item) {
+            collectSemantic(item, fallbackRole, out);
+          });
           return;
         }
         if (typeof value === "string") {
-          if (value.trim()) out.push({ role: fallbackRole, text: value, label: "" });
+          if (value.trim())
+            out.push({ role: fallbackRole, text: value, label: "" });
           return;
         }
         if (typeof value !== "object") return;
-        var type = String(value.type || "").toLowerCase(), role = String(value.role || fallbackRole || "user").toLowerCase();
-        if (type === "function_call_output" || type === "custom_tool_call_output") {
-          out.push({ role: "tool", text: contentText(value.output || value.content), label: value.name || value.call_id || "" });
+        var type = String(value.type || "").toLowerCase(),
+          role = String(value.role || fallbackRole || "user").toLowerCase();
+        if (
+          type === "function_call_output" ||
+          type === "custom_tool_call_output"
+        ) {
+          out.push({
+            role: "tool",
+            text: contentText(value.output || value.content),
+            label: value.name || value.call_id || "",
+          });
           return;
         }
         if (type === "function_call" || type === "custom_tool_call") {
-          out.push({ role: "tool", text: contentText(value.arguments || value.input || value.content), label: value.name || "" });
+          out.push({
+            role: "tool",
+            text: contentText(value.arguments || value.input || value.content),
+            label: value.name || "",
+          });
           return;
         }
         if (type === "compaction" || type === "compaction_trigger") {
-          out.push({ role: "compaction", text: contentText(value.summary || value.content) || t("compactionRole"), label: "" });
+          out.push({
+            role: "compaction",
+            text:
+              contentText(value.summary || value.content) ||
+              t("compactionRole"),
+            label: "",
+          });
           return;
         }
-        if (type === "input_image" || type === "image" || type === "input_audio" || type === "video") {
+        if (
+          type === "input_image" ||
+          type === "image" ||
+          type === "input_audio" ||
+          type === "video"
+        ) {
           out.push({ role: role, text: t("attachment"), label: type });
           return;
         }
         if (type === "message" || value.role) {
           var text = contentText(value.content || value.text);
-          if (text) out.push({ role: role === "assistant" ? "assistant" : role === "tool" ? "tool" : role === "system" || role === "developer" ? "system" : "user", text: text, label: "" });
+          if (text)
+            out.push({
+              role:
+                role === "assistant"
+                  ? "assistant"
+                  : role === "tool"
+                    ? "tool"
+                    : role === "system" || role === "developer"
+                      ? "system"
+                      : "user",
+              text: text,
+              label: "",
+            });
           return;
         }
         if (value.output) collectSemantic(value.output, fallbackRole, out);
-        else if (value.content) collectSemantic(value.content, fallbackRole, out);
+        else if (value.content)
+          collectSemantic(value.content, fallbackRole, out);
       }
       function contentText(value) {
         if (value == null) return "";
         if (typeof value === "string") return value;
-        if (Array.isArray(value)) return value.map(contentText).filter(Boolean).join("\n");
+        if (Array.isArray(value))
+          return value.map(contentText).filter(Boolean).join("\n");
         if (typeof value !== "object") return String(value);
-        if (/image|audio|video/.test(String(value.type || ""))) return t("attachment");
-        var nested = value.text || value.output_text || value.input_text || value.output || value.content || value.summary;
+        if (/image|audio|video/.test(String(value.type || "")))
+          return t("attachment");
+        var nested =
+          value.text ||
+          value.output_text ||
+          value.input_text ||
+          value.output ||
+          value.content ||
+          value.summary;
         if (nested != null) return contentText(nested);
-        try { return JSON.stringify(value, null, 2); } catch (e) { return String(value); }
+        try {
+          return JSON.stringify(value, null, 2);
+        } catch (e) {
+          return String(value);
+        }
       }
       function renderMessage(role, text, label) {
         if (!text) return "";
-		if (role === "system") return '<details class="system-context"><summary>' + esc(t("systemContext", { chars: text.length })) + '</summary><pre>' + esc(text) + '</pre></details>';
-        var roleKey = role === "assistant" ? "assistantRole" : role === "tool" ? "toolRole" : role === "compaction" ? "compactionRole" : "userRole";
+        if (role === "system")
+          return (
+            '<details class="system-context"><summary>' +
+            esc(t("systemContext", { chars: text.length })) +
+            "</summary><pre>" +
+            esc(text) +
+            "</pre></details>"
+          );
+        var roleKey =
+          role === "assistant"
+            ? "assistantRole"
+            : role === "tool"
+              ? "toolRole"
+              : role === "compaction"
+                ? "compactionRole"
+                : "userRole";
         var preview = text.length > 4000 ? text.slice(0, 1400) + "…" : text;
         var id = text.length > 4000 ? retainFullText(text) : "";
-        var full = id ? '<button onclick="expandFullText(\'' + id + '\',this)">' + t("expandFull") + '</button><div class="message-text full-content" style="display:none"></div>' : "";
-        return '<div class="message-bubble ' + esc(role) + '"><div class="message-role">' + esc(t(roleKey) + (label ? " · " + label : "")) + '</div><div class="message-text">' + esc(preview) + "</div>" + full + "</div>";
+        var full = id
+          ? "<button onclick=\"expandFullText('" +
+            id +
+            "',this)\">" +
+            t("expandFull") +
+            '</button><div class="message-text full-content" style="display:none"></div>'
+          : "";
+        return (
+          '<div class="message-bubble ' +
+          esc(role) +
+          '"><div class="message-role">' +
+          esc(t(roleKey) + (label ? " · " + label : "")) +
+          '</div><div class="message-text">' +
+          esc(preview) +
+          "</div>" +
+          full +
+          "</div>"
+        );
       }
       function readableMetadata(record) {
-        var facets = record.facets || {}, preferred = ["project.name", "client", "request.kind", "auth.id", "reasoning.effort"];
-        var primary = '<div class="facet-badges">' + preferred.map(function (key) {
-          return (facets[key] || []).map(function (value) { return "<span>" + esc(facetLabel(key)) + ": " + esc(facetValueLabel(key, value)) + "</span>"; }).join("");
-        }).join("") + "</div>";
-        var rows = Object.keys(facets).sort().map(function (key) {
-          return "<dt>" + esc(facetLabel(key)) + "</dt><dd>" + esc((facets[key] || []).map(function (value) { return facetValueLabel(key, value); }).join("、")) + "</dd>";
-        }).join("");
-        return { primary: primary, details: rows ? '<details class="technical-meta"><summary>' + t("technicalMetadata") + "</summary><dl>" + rows + "</dl></details>" : "" };
+        var facets = record.facets || {},
+          preferred = [
+            "project.name",
+            "client",
+            "request.kind",
+            "auth.id",
+            "reasoning.effort",
+          ];
+        var primary =
+          '<div class="facet-badges">' +
+          preferred
+            .map(function (key) {
+              return (facets[key] || [])
+                .map(function (value) {
+                  return (
+                    "<span>" +
+                    esc(facetLabel(key)) +
+                    ": " +
+                    esc(facetValueLabel(key, value)) +
+                    "</span>"
+                  );
+                })
+                .join("");
+            })
+            .join("") +
+          "</div>";
+        var rows = Object.keys(facets)
+          .sort()
+          .map(function (key) {
+            return (
+              "<dt>" +
+              esc(facetLabel(key)) +
+              "</dt><dd>" +
+              esc(
+                (facets[key] || [])
+                  .map(function (value) {
+                    return facetValueLabel(key, value);
+                  })
+                  .join("、"),
+              ) +
+              "</dd>"
+            );
+          })
+          .join("");
+        return {
+          primary: primary,
+          details: rows
+            ? '<details class="technical-meta"><summary>' +
+              t("technicalMetadata") +
+              "</summary><dl>" +
+              rows +
+              "</dl></details>"
+            : "",
+        };
       }
       function decode64(x) {
         if (!x) return "";
@@ -1598,20 +2672,70 @@
           return "[" + t("binary", { count: x.length }) + "]";
         }
       }
-      function goSessions() { location.hash = "#/sessions"; }
-      function goSession() { location.hash = "#/sessions/" + encodeURIComponent(detailSessionID); }
-      function goRequest() { location.hash = "#/sessions/" + encodeURIComponent(detailSessionID) + "/requests/" + encodeURIComponent(currentRequestID); }
-      function closeDrawer() { goSessions(); }
+      function goSessions() {
+        location.hash = "#/sessions";
+      }
+      function goSession() {
+        location.hash = "#/sessions/" + encodeURIComponent(detailSessionID);
+      }
+      function goRequest() {
+        location.hash =
+          "#/sessions/" +
+          encodeURIComponent(detailSessionID) +
+          "/requests/" +
+          encodeURIComponent(currentRequestID);
+      }
+      function closeDrawer() {
+        goSessions();
+      }
       async function route() {
-        if (!session || document.getElementById("login").style.display !== "none") return;
-        var path = (location.hash || "#/sessions").replace(/^#\/?/, "").split("/").filter(Boolean).map(decodeURIComponent);
-        if (path[0] !== "sessions") { location.hash = "#/sessions"; return; }
+        if (
+          !session ||
+          document.getElementById("login").style.display !== "none"
+        )
+          return;
+        var path = (location.hash || "#/sessions")
+          .replace(/^#\/?/, "")
+          .split("/")
+          .filter(Boolean)
+          .map(decodeURIComponent);
+        if (path[0] !== "sessions") {
+          location.hash = "#/sessions";
+          return;
+        }
         document.getElementById("subDetailView").classList.remove("open");
-        if (path[1] && path[2] === "requests" && path[3] && path[4] === "raw" && path[5]) { await showRawDetail(path[1],path[3],path[5]); return; }
-        if (path[1] && path[2] === "requests" && path[3] && path[4] === "tools" && path[5] != null) { await showToolDetail(path[1],path[3],path[5]); return; }
-        if (path[1] && path[2] === "requests" && path[3]) { await showRequest(path[1], path[3]); return; }
-        if (path[1]) { await showSession(path[1]); return; }
-        document.getElementById("drawer").classList.remove("open"); document.getElementById("requestView").classList.remove("open"); document.getElementById("subDetailView").classList.remove("open"); document.getElementById("listView").style.display = "grid";
+        if (
+          path[1] &&
+          path[2] === "requests" &&
+          path[3] &&
+          path[4] === "raw" &&
+          path[5]
+        ) {
+          await showRawDetail(path[1], path[3], path[5]);
+          return;
+        }
+        if (
+          path[1] &&
+          path[2] === "requests" &&
+          path[3] &&
+          path[4] === "tools" &&
+          path[5] != null
+        ) {
+          await showToolDetail(path[1], path[3], path[5]);
+          return;
+        }
+        if (path[1] && path[2] === "requests" && path[3]) {
+          await showRequest(path[1], path[3]);
+          return;
+        }
+        if (path[1]) {
+          await showSession(path[1]);
+          return;
+        }
+        document.getElementById("drawer").classList.remove("open");
+        document.getElementById("requestView").classList.remove("open");
+        document.getElementById("subDetailView").classList.remove("open");
+        document.getElementById("listView").style.display = "grid";
       }
       function esc(x) {
         return String(x == null ? "" : x).replace(/[&<>"']/g, function (c) {
@@ -1625,6 +2749,11 @@
         });
       }
       applyI18n();
+      var languageRoot = document.documentElement;
+      try {
+        if (parent !== window && parent.document.documentElement)
+          languageRoot = parent.document.documentElement;
+      } catch (ignore) {}
       new MutationObserver(function (mutations) {
         if (
           mutations.some(function (mutation) {
@@ -1638,7 +2767,7 @@
           )
             loadSessions();
         }
-      }).observe(document.documentElement, {
+      }).observe(languageRoot, {
         attributes: true,
         attributeFilter: ["lang"],
       });
@@ -1651,7 +2780,12 @@
       } else {
         document.getElementById("base").value = location.origin;
       }
-      window.addEventListener("hashchange", function(){ route().catch(function(e){ console.error(e); hideLoading(); }); });
+      window.addEventListener("hashchange", function () {
+        route().catch(function (e) {
+          console.error(e);
+          hideLoading();
+        });
+      });
     </script>
   </body>
 </html>

@@ -60,6 +60,29 @@ func TestRequestTimelineMarksCompaction(t *testing.T) {
 	}
 }
 
+func TestRequestTimelineDoesNotReuseHistoricalCompactionLabel(t *testing.T) {
+	store, err := OpenStore(filepath.Join(t.TempDir(), "archive.sqlite"), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.DB.Close()
+	now := time.Now()
+	records := []Record{
+		{RequestID: "compacted", SessionID: "session", StartedAt: now, CompletedAt: now, OriginalRequest: []byte(`{"input":[{"type":"compaction_trigger"}]}`)},
+		{RequestID: "later", SessionID: "session", StartedAt: now.Add(time.Second), CompletedAt: now.Add(time.Second), OriginalRequest: []byte(`{"input":[{"type":"compaction_trigger"},{"role":"user","content":"new turn"}]}`)},
+	}
+	if err = store.PutBatch(records); err != nil {
+		t.Fatal(err)
+	}
+	view, err := store.RequestTimeline(context.Background(), "later")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.Kind != "turn" {
+		t.Fatalf("kind=%q", view.Kind)
+	}
+}
+
 func TestConversationSummaryOnlyUsesExplicitUserMessages(t *testing.T) {
 	body := []byte(`{"input":[{"role":"user","content":"real user request"},{"role":"assistant","content":"wrong assistant title"}]}`)
 	if got := extractConversationSummary(body); got != "real user request" {
@@ -71,5 +94,36 @@ func TestConversationSummarySkipsContextWrappers(t *testing.T) {
 	body := []byte(`{"input":[{"role":"user","content":"<context>machine metadata</context><environment_context>cwd</environment_context>calibre 有 API 吗，我这里有两个文件夹"}]}`)
 	if got := extractConversationSummary(body); got != "calibre 有 API 吗，我这里有两个文件夹" {
 		t.Fatalf("summary=%q", got)
+	}
+}
+
+func TestConversationSummaryFirstKeepsStableSessionOpening(t *testing.T) {
+	body := []byte(`{"input":[{"role":"user","content":"first real request"},{"role":"assistant","content":"reply"},{"role":"user","content":"latest turn"}]}`)
+	if got := extractConversationSummary(body); got != "latest turn" {
+		t.Fatalf("request summary=%q", got)
+	}
+	if got := extractConversationSummaryFirst(body); got != "first real request" {
+		t.Fatalf("session summary=%q", got)
+	}
+}
+
+func TestConversationSummaryExtractsEmbeddedTitlePrompt(t *testing.T) {
+	body := []byte(`{"input":[{"role":"user","content":"Generate a concise UI title.\n\nUser prompt:\ncalibre 有 API 吗，我这里有两个文件夹"}]}`)
+	if got := extractConversationSummary(body); got != "calibre 有 API 吗，我这里有两个文件夹" {
+		t.Fatalf("summary=%q", got)
+	}
+}
+
+func TestConversationSummaryUnwrapsEscapedUserRequest(t *testing.T) {
+	body := []byte(`{"input":[{"role":"user","content":"&lt;userRequest&gt; 继续处理归档 &lt;/userRequest&gt;"}]}`)
+	if got := extractConversationSummary(body); got != "继续处理归档" {
+		t.Fatalf("summary=%q", got)
+	}
+}
+
+func TestExtractThreadSourceFromEmbeddedTurnMetadata(t *testing.T) {
+	body := []byte(`{"client_metadata":{"x-codex-turn-metadata":"{\"thread_source\":\"system\"}"}}`)
+	if got := extractThreadSource(body); got != "system" {
+		t.Fatalf("thread source=%q", got)
 	}
 }

@@ -28,6 +28,12 @@ func TestManagementUIContainsBilingualFacetedExperience(t *testing.T) {
 		[]byte("extractToolEntriesFromValues"),
 		[]byte("goLastSessionPage"),
 		[]byte("downloadReady"),
+		[]byte("languageHint"),
+		[]byte("parent.document.documentElement"),
+		[]byte("normalizeKeyHash"),
+		[]byte("event.key==='Enter'"),
+		[]byte("thread_sources"),
+		[]byte("sessionHasCompaction"),
 	}
 	for _, check := range checks {
 		if !bytes.Contains(managementHTML, check) {

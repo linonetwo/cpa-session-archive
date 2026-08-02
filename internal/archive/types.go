@@ -18,6 +18,7 @@ type Record struct {
 	TurnID           string              `json:"turn_id,omitempty"`
 	WindowID         string              `json:"window_id,omitempty"`
 	RequestKind      string              `json:"request_kind,omitempty"`
+	ThreadSource     string              `json:"thread_source,omitempty"`
 	Client           string              `json:"client,omitempty"`
 	SourceFormat     string              `json:"source_format,omitempty"`
 	RequestedModel   string              `json:"requested_model,omitempty"`

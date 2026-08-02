@@ -110,7 +110,7 @@ func main() {
 	http.HandleFunc("/archive-api/v1/exports/", s.ticketedExport)
 	http.HandleFunc("/v1/maintenance/gc", s.gc)
 	addr := env("LISTEN_ADDR", ":8080")
-	log.Printf("archive collector v0.7.0 listening on %s, db=%s, store_upstream=%v", addr, dbPath, storeUpstream)
+	log.Printf("archive collector v0.7.1 listening on %s, db=%s, store_upstream=%v", addr, dbPath, storeUpstream)
 	log.Fatal(http.ListenAndServe(addr, nil))
 }
 func env(k, d string) string {
@@ -406,6 +406,10 @@ func (s *server) ticketedExport(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Disposition", `attachment; filename="`+ticket.Filename+`"`)
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+	if r.Method == http.MethodHead {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
 	var e error
 	if ticket.Format == "sft" {
 		e = s.s.ExportTrainingJSONL(r.Context(), map[bool]string{true: ticket.SessionID, false: ""}[ticket.Scope == "session"], w)

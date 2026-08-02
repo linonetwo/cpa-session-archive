@@ -14,7 +14,7 @@ func TestFacetIndexAndFiltering(t *testing.T) {
 	}
 	defer s.DB.Close()
 	now := time.Now()
-	records := []Record{{RequestID: "r1", SessionID: "s1", RequestedModel: "gpt", Outcome: "succeeded", StartedAt: now, CompletedAt: now, OriginalRequest: []byte(`{"input":"hello"}`), Facets: map[string][]string{"project.name": {"repo-a"}, "client": {"Codex Desktop"}, "source.format": {"openai-response"}}}, {RequestID: "r2", SessionID: "s2", RequestedModel: "claude", Outcome: "succeeded", StartedAt: now, CompletedAt: now, OriginalRequest: []byte(`{"input":"world"}`), Facets: map[string][]string{"project.name": {"repo-b"}, "client": {"Claude Code"}}}}
+	records := []Record{{RequestID: "r1", SessionID: "s1", RequestedModel: "gpt", Outcome: "succeeded", StartedAt: now, CompletedAt: now, OriginalRequest: []byte(`{"input":"hello"}`), Facets: map[string][]string{"project.name": {"repo-a"}, "client": {"Codex Desktop"}, "source.format": {"openai-response"}, "client.request_id": {"unique-1"}}}, {RequestID: "r2", SessionID: "s2", RequestedModel: "claude", Outcome: "succeeded", StartedAt: now, CompletedAt: now, OriginalRequest: []byte(`{"input":"world"}`), Facets: map[string][]string{"project.name": {"repo-b"}, "client": {"Claude Code"}}}}
 	if e = s.PutBatch(records); e != nil {
 		t.Fatal(e)
 	}
@@ -24,6 +24,11 @@ func TestFacetIndexAndFiltering(t *testing.T) {
 	}
 	if len(facets) < 4 {
 		t.Fatalf("facet count=%d", len(facets))
+	}
+	for _, facet := range facets {
+		if facet.Name == "client.request_id" {
+			t.Fatal("high-cardinality request ID leaked into browse facets")
+		}
 	}
 	sessions, e := s.SessionsFiltered(context.Background(), 10, map[string]string{"project.name": "repo-a", "client": "Codex Desktop"})
 	if e != nil {

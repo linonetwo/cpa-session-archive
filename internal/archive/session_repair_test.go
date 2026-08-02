@@ -148,3 +148,63 @@ func TestRepairCanonicalSessionsMergesTransientExecutions(t *testing.T) {
 		t.Fatalf("execution facets=%d", executions)
 	}
 }
+
+func TestRepairRecordPreviewsResumesByExtractorVersion(t *testing.T) {
+	store, err := OpenStore(filepath.Join(t.TempDir(), "archive.sqlite"), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.DB.Close()
+	now := time.Now()
+	records := []Record{
+		{RequestID: "already-current", SessionID: "session", Summary: "keep current", StartedAt: now, CompletedAt: now, OriginalRequest: []byte(`{"input":[{"role":"user","content":"should not replace"}]}`)},
+		{RequestID: "needs-repair", SessionID: "session", Summary: "old wrapper", StartedAt: now.Add(time.Second), CompletedAt: now.Add(time.Second), OriginalRequest: []byte(`{"input":[{"role":"user","content":"Generate a title.\n\nUser prompt:\nactual request"}]}`)},
+	}
+	if err = store.PutBatch(records); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.DB.Exec(`INSERT INTO previewed_requests(request_id,version) VALUES('already-current',4),('needs-repair',1)`); err != nil {
+		t.Fatal(err)
+	}
+	if err = store.RepairRecordPreviews(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var kept, repaired string
+	if err = store.DB.QueryRow(`SELECT summary FROM records WHERE request_id='already-current'`).Scan(&kept); err != nil {
+		t.Fatal(err)
+	}
+	if err = store.DB.QueryRow(`SELECT summary FROM records WHERE request_id='needs-repair'`).Scan(&repaired); err != nil {
+		t.Fatal(err)
+	}
+	if kept != "keep current" || repaired != "actual request" {
+		t.Fatalf("kept=%q repaired=%q", kept, repaired)
+	}
+	var version int
+	if err = store.DB.QueryRow(`SELECT version FROM previewed_requests WHERE request_id='needs-repair'`).Scan(&version); err != nil || version != 4 {
+		t.Fatalf("version=%d err=%v", version, err)
+	}
+}
+
+func TestRepairRecordPreviewsBackfillsThreadSource(t *testing.T) {
+	store, err := OpenStore(filepath.Join(t.TempDir(), "archive.sqlite"), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.DB.Close()
+	now := time.Now()
+	body := []byte(`{"client_metadata":{"x-codex-turn-metadata":"{\"thread_source\":\"system\"}"},"input":[{"role":"user","content":"User prompt:\nreal task"}]}`)
+	if err = store.PutBatch([]Record{{RequestID: "system", SessionID: "session", StartedAt: now, CompletedAt: now, OriginalRequest: body}}); err != nil {
+		t.Fatal(err)
+	}
+	if err = store.RepairRecordPreviews(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err = store.DB.QueryRow(`SELECT COUNT(*) FROM record_facets WHERE request_id='system' AND name='thread.source' AND value='system'`).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("record facet count=%d err=%v", count, err)
+	}
+	sessions, err := store.SessionsFiltered(context.Background(), 10, map[string]string{"thread.source": "system"})
+	if err != nil || len(sessions) != 1 || len(sessions[0].ThreadSources) != 1 || sessions[0].ThreadSources[0] != "system" {
+		t.Fatalf("sessions=%+v err=%v", sessions, err)
+	}
+}

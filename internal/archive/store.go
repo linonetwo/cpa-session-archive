@@ -23,14 +23,16 @@ type Store struct {
 	StoreUpstream bool
 }
 type SessionSummary struct {
-	SessionID string `json:"session_id"`
-	Requests  int    `json:"requests"`
-	FirstAt   string `json:"first_at"`
-	LastAt    string `json:"last_at"`
-	KeyID     string `json:"key_id,omitempty"`
-	Model     string `json:"model,omitempty"`
-	Project   string `json:"project,omitempty"`
-	Summary   string `json:"summary,omitempty"`
+	SessionID     string   `json:"session_id"`
+	Requests      int      `json:"requests"`
+	FirstAt       string   `json:"first_at"`
+	LastAt        string   `json:"last_at"`
+	KeyID         string   `json:"key_id,omitempty"`
+	Model         string   `json:"model,omitempty"`
+	Project       string   `json:"project,omitempty"`
+	Summary       string   `json:"summary,omitempty"`
+	Kinds         []string `json:"kinds,omitempty"`
+	ThreadSources []string `json:"thread_sources,omitempty"`
 }
 type Stats struct {
 	Records         int64 `json:"records"`
@@ -46,13 +48,14 @@ func OpenStore(path string, storeUpstream bool) (*Store, error) {
 	if e != nil {
 		return nil, e
 	}
-	schema := `CREATE TABLE IF NOT EXISTS records(id INTEGER PRIMARY KEY,request_id TEXT NOT NULL UNIQUE,trace_id TEXT,session_id TEXT NOT NULL,key_id TEXT,source_format TEXT,requested_model TEXT,model TEXT,stream INTEGER,outcome TEXT,status_code INTEGER,error TEXT,started_at TEXT,completed_at TEXT,parent_response_id TEXT,response_id TEXT,original_request_gz BLOB,upstream_request_gz BLOB,response_gz BLOB,truncated INTEGER,metadata_json TEXT);CREATE TABLE IF NOT EXISTS record_facets(request_id TEXT NOT NULL,name TEXT NOT NULL,value TEXT NOT NULL,PRIMARY KEY(request_id,name,value));CREATE INDEX IF NOT EXISTS idx_facets_name_value ON record_facets(name,value);CREATE TABLE IF NOT EXISTS blobs(hash TEXT PRIMARY KEY,media_type TEXT,raw_size INTEGER NOT NULL,codec TEXT NOT NULL,data BLOB NOT NULL);CREATE INDEX IF NOT EXISTS idx_records_session_time ON records(session_id,started_at);CREATE INDEX IF NOT EXISTS idx_records_key_time ON records(key_id,started_at);CREATE INDEX IF NOT EXISTS idx_records_model_time ON records(requested_model,started_at);CREATE TABLE IF NOT EXISTS session_summaries(session_id TEXT PRIMARY KEY,requests INTEGER NOT NULL,first_at TEXT NOT NULL,last_at TEXT NOT NULL,key_id TEXT NOT NULL DEFAULT '',model TEXT NOT NULL DEFAULT '',project TEXT NOT NULL DEFAULT '',summary TEXT NOT NULL DEFAULT '',summary_at TEXT NOT NULL DEFAULT '');CREATE TABLE IF NOT EXISTS session_facets(session_id TEXT NOT NULL,name TEXT NOT NULL,value TEXT NOT NULL,PRIMARY KEY(session_id,name,value));CREATE INDEX IF NOT EXISTS idx_session_facets_name_value ON session_facets(name,value);CREATE TABLE IF NOT EXISTS session_indexed_requests(request_id TEXT PRIMARY KEY,session_id TEXT NOT NULL);CREATE TABLE IF NOT EXISTS normalized_response_requests(request_id TEXT PRIMARY KEY);CREATE TABLE IF NOT EXISTS previewed_requests(request_id TEXT PRIMARY KEY);CREATE TABLE IF NOT EXISTS repair_versions(name TEXT PRIMARY KEY,version INTEGER NOT NULL);`
+	schema := `CREATE TABLE IF NOT EXISTS records(id INTEGER PRIMARY KEY,request_id TEXT NOT NULL UNIQUE,trace_id TEXT,session_id TEXT NOT NULL,key_id TEXT,source_format TEXT,requested_model TEXT,model TEXT,stream INTEGER,outcome TEXT,status_code INTEGER,error TEXT,started_at TEXT,completed_at TEXT,parent_response_id TEXT,response_id TEXT,original_request_gz BLOB,upstream_request_gz BLOB,response_gz BLOB,truncated INTEGER,metadata_json TEXT);CREATE TABLE IF NOT EXISTS record_facets(request_id TEXT NOT NULL,name TEXT NOT NULL,value TEXT NOT NULL,PRIMARY KEY(request_id,name,value));CREATE INDEX IF NOT EXISTS idx_facets_name_value ON record_facets(name,value);CREATE TABLE IF NOT EXISTS blobs(hash TEXT PRIMARY KEY,media_type TEXT,raw_size INTEGER NOT NULL,codec TEXT NOT NULL,data BLOB NOT NULL);CREATE INDEX IF NOT EXISTS idx_records_session_time ON records(session_id,started_at);CREATE INDEX IF NOT EXISTS idx_records_key_time ON records(key_id,started_at);CREATE INDEX IF NOT EXISTS idx_records_model_time ON records(requested_model,started_at);CREATE TABLE IF NOT EXISTS session_summaries(session_id TEXT PRIMARY KEY,requests INTEGER NOT NULL,first_at TEXT NOT NULL,last_at TEXT NOT NULL,key_id TEXT NOT NULL DEFAULT '',model TEXT NOT NULL DEFAULT '',project TEXT NOT NULL DEFAULT '',summary TEXT NOT NULL DEFAULT '',summary_at TEXT NOT NULL DEFAULT '');CREATE TABLE IF NOT EXISTS session_facets(session_id TEXT NOT NULL,name TEXT NOT NULL,value TEXT NOT NULL,PRIMARY KEY(session_id,name,value));CREATE INDEX IF NOT EXISTS idx_session_facets_name_value ON session_facets(name,value);CREATE TABLE IF NOT EXISTS session_indexed_requests(request_id TEXT PRIMARY KEY,session_id TEXT NOT NULL);CREATE TABLE IF NOT EXISTS normalized_response_requests(request_id TEXT PRIMARY KEY);CREATE TABLE IF NOT EXISTS previewed_requests(request_id TEXT PRIMARY KEY,version INTEGER NOT NULL DEFAULT 1);CREATE TABLE IF NOT EXISTS repair_versions(name TEXT PRIMARY KEY,version INTEGER NOT NULL);`
 	if _, e = db.Exec(schema); e != nil {
 		return nil, e
 	}
 	for _, q := range []string{"ALTER TABLE records ADD COLUMN original_ref TEXT", "ALTER TABLE records ADD COLUMN upstream_ref TEXT", "ALTER TABLE records ADD COLUMN response_ref TEXT", "ALTER TABLE records ADD COLUMN facets_json TEXT", "ALTER TABLE records ADD COLUMN summary TEXT", "ALTER TABLE records ADD COLUMN response_preview TEXT"} {
 		_, _ = db.Exec(q)
 	}
+	_, _ = db.Exec(`ALTER TABLE previewed_requests ADD COLUMN version INTEGER NOT NULL DEFAULT 1`)
 	s := &Store{DB: db, DBPath: path, StoreUpstream: storeUpstream}
 	return s, nil
 }
@@ -182,7 +185,11 @@ func (s *Store) Facets(ctx context.Context) ([]FacetCount, error) {
 	rows, e := s.DB.QueryContext(ctx, `WITH ranked AS (
 		SELECT name,value,COUNT(*) AS sessions,ROW_NUMBER() OVER(PARTITION BY name ORDER BY COUNT(*) DESC,value) AS rank
 		FROM session_facets
-		WHERE name NOT IN ('request.id','trace.id','response.id','turn.id','window.id','tool.call_id')
+		WHERE name NOT IN (
+			'request.id','trace.id','response.id','turn.id','window.id','tool.call_id',
+			'client.request_id','session.id','conversation.id','thread.id',
+			'header.session-id','header.thread-id','execution.session.id'
+		)
 		GROUP BY name,value
 	) SELECT name,value,sessions FROM ranked WHERE rank<=100 ORDER BY name,sessions DESC,value`)
 	if e != nil {
@@ -200,7 +207,10 @@ func (s *Store) Facets(ctx context.Context) ([]FacetCount, error) {
 	return out, rows.Err()
 }
 func (s *Store) Sessions(ctx context.Context, limit int) ([]SessionSummary, error) {
-	rows, e := s.DB.QueryContext(ctx, `SELECT session_id,requests,first_at,last_at,key_id,model,project,summary FROM session_summaries ORDER BY last_at DESC LIMIT ?`, limit)
+	rows, e := s.DB.QueryContext(ctx, `SELECT s.session_id,s.requests,s.first_at,s.last_at,s.key_id,s.model,s.project,s.summary,
+		COALESCE((SELECT GROUP_CONCAT(value,CHAR(31)) FROM session_facets f WHERE f.session_id=s.session_id AND f.name='request.kind'),''),
+		COALESCE((SELECT GROUP_CONCAT(value,CHAR(31)) FROM session_facets f WHERE f.session_id=s.session_id AND f.name='thread.source'),'')
+		FROM session_summaries s ORDER BY s.last_at DESC LIMIT ?`, limit)
 	if e != nil {
 		return nil, e
 	}
@@ -208,9 +218,12 @@ func (s *Store) Sessions(ctx context.Context, limit int) ([]SessionSummary, erro
 	out := []SessionSummary{}
 	for rows.Next() {
 		var x SessionSummary
-		if e = rows.Scan(&x.SessionID, &x.Requests, &x.FirstAt, &x.LastAt, &x.KeyID, &x.Model, &x.Project, &x.Summary); e != nil {
+		var kinds, sources string
+		if e = rows.Scan(&x.SessionID, &x.Requests, &x.FirstAt, &x.LastAt, &x.KeyID, &x.Model, &x.Project, &x.Summary, &kinds, &sources); e != nil {
 			return nil, e
 		}
+		x.Kinds = splitProjectionValues(kinds)
+		x.ThreadSources = splitProjectionValues(sources)
 		out = append(out, x)
 	}
 	return out, rows.Err()
@@ -223,7 +236,10 @@ func (s *Store) SessionsFiltered(ctx context.Context, limit int, filters map[str
 		where = append(where, `EXISTS (SELECT 1 FROM session_facets f WHERE f.session_id=s.session_id AND f.name=? AND f.value=?)`)
 		args = append(args, name, value)
 	}
-	q := `SELECT s.session_id,s.requests,s.first_at,s.last_at,s.key_id,s.model,s.project,s.summary FROM session_summaries s`
+	q := `SELECT s.session_id,s.requests,s.first_at,s.last_at,s.key_id,s.model,s.project,s.summary,
+		COALESCE((SELECT GROUP_CONCAT(value,CHAR(31)) FROM session_facets sf WHERE sf.session_id=s.session_id AND sf.name='request.kind'),''),
+		COALESCE((SELECT GROUP_CONCAT(value,CHAR(31)) FROM session_facets sf WHERE sf.session_id=s.session_id AND sf.name='thread.source'),'')
+		FROM session_summaries s`
 	if len(where) > 0 {
 		q += " WHERE " + strings.Join(where, " AND ")
 	}
@@ -237,12 +253,22 @@ func (s *Store) SessionsFiltered(ctx context.Context, limit int, filters map[str
 	out := []SessionSummary{}
 	for rows.Next() {
 		var x SessionSummary
-		if e = rows.Scan(&x.SessionID, &x.Requests, &x.FirstAt, &x.LastAt, &x.KeyID, &x.Model, &x.Project, &x.Summary); e != nil {
+		var kinds, sources string
+		if e = rows.Scan(&x.SessionID, &x.Requests, &x.FirstAt, &x.LastAt, &x.KeyID, &x.Model, &x.Project, &x.Summary, &kinds, &sources); e != nil {
 			return nil, e
 		}
+		x.Kinds = splitProjectionValues(kinds)
+		x.ThreadSources = splitProjectionValues(sources)
 		out = append(out, x)
 	}
 	return out, rows.Err()
+}
+
+func splitProjectionValues(value string) []string {
+	if value == "" {
+		return nil
+	}
+	return strings.Split(value, string(rune(31)))
 }
 
 type SessionPage struct {

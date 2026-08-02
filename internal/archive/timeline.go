@@ -74,9 +74,15 @@ func (s *Store) RequestTimeline(ctx context.Context, id string) (RequestTimeline
 
 	kind := requestKind(currentRoot)
 	if kind == "" {
+		kind = firstTimelineFacet(current.Facets, "request.kind")
+	}
+	if kind == "compact" {
+		kind = "compaction"
+	}
+	if kind == "" {
 		kind = "turn"
 	}
-	if containsRole(currentInput, "compaction") {
+	if kind == "compaction" || containsRole(delta, "compaction") {
 		kind = "compaction"
 	} else if previous != nil && len(currentInput) > 0 && common == len(currentInput) {
 		kind = "retry"
@@ -109,6 +115,13 @@ func (s *Store) RequestTimeline(ctx context.Context, id string) (RequestTimeline
 		Kind: kind, InputItems: len(currentInput), HistoryItems: historyItems,
 		SystemChars: systemChars, ToolDefinitions: toolDefinitions, Entries: entries,
 	}, nil
+}
+
+func firstTimelineFacet(facets map[string][]string, name string) string {
+	if values := facets[name]; len(values) > 0 {
+		return strings.ToLower(values[0])
+	}
+	return ""
 }
 
 func decodedObject(raw []byte) any {

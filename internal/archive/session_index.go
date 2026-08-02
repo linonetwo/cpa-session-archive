@@ -203,7 +203,7 @@ func (s *Store) RepairSessionSummaries(ctx context.Context) error {
 	var version int
 	_ = s.DB.QueryRowContext(ctx, `SELECT version FROM repair_versions WHERE name='session_summary'`).Scan(&version)
 	where := ` WHERE s.summary='' OR lower(s.summary) LIKE '<environment_%' OR lower(s.summary) LIKE '<workspace_info>%' OR lower(s.summary) LIKE '<in-app-browser-context%' OR lower(s.summary) LIKE '<app-context>%' OR lower(s.summary) LIKE '<context>%' OR lower(s.summary) LIKE '&lt;context&gt;%' OR lower(s.summary) LIKE '# files mentioned by the user:%'`
-	if version < 2 {
+	if version < 3 {
 		where = ""
 	}
 	rows, err := s.DB.QueryContext(ctx, `SELECT s.session_id,COALESCE((SELECT original_ref FROM records r WHERE r.session_id=s.session_id ORDER BY r.started_at LIMIT 1),'') FROM session_summaries s`+where)
@@ -232,7 +232,7 @@ func (s *Store) RepairSessionSummaries(ctx context.Context) error {
 		if loadErr != nil {
 			return loadErr
 		}
-		summary := extractConversationSummary(body)
+		summary := extractConversationSummaryFirst(body)
 		if summary == "" {
 			continue
 		}
@@ -241,7 +241,7 @@ func (s *Store) RepairSessionSummaries(ctx context.Context) error {
 		}
 		repaired++
 	}
-	_, _ = s.DB.ExecContext(ctx, `INSERT INTO repair_versions(name,version) VALUES('session_summary',2) ON CONFLICT(name) DO UPDATE SET version=excluded.version`)
+	_, _ = s.DB.ExecContext(ctx, `INSERT INTO repair_versions(name,version) VALUES('session_summary',3) ON CONFLICT(name) DO UPDATE SET version=excluded.version`)
 	log.Printf("session summary repair complete: %d/%d updated", repaired, len(candidates))
 	return nil
 }
@@ -250,22 +250,16 @@ func (s *Store) RepairSessionSummaries(ctx context.Context) error {
 // marker table prevents non-conversational records from being re-expanded on
 // every restart.
 func (s *Store) RepairRecordPreviews(ctx context.Context) error {
-	var version int
-	_ = s.DB.QueryRowContext(ctx, `SELECT version FROM repair_versions WHERE name='record_preview'`).Scan(&version)
-	if version < 2 {
-		if _, err := s.DB.ExecContext(ctx, `DELETE FROM previewed_requests`); err != nil {
-			return err
-		}
-	}
-	rows, err := s.DB.QueryContext(ctx, `SELECT r.request_id,COALESCE(r.original_ref,''),COALESCE(r.response_ref,'') FROM records r LEFT JOIN previewed_requests p ON p.request_id=r.request_id WHERE p.request_id IS NULL ORDER BY r.id`)
+	const previewVersion = 4
+	rows, err := s.DB.QueryContext(ctx, `SELECT r.request_id,r.session_id,COALESCE(r.original_ref,''),COALESCE(r.response_ref,''),COALESCE(r.facets_json,'') FROM records r LEFT JOIN previewed_requests p ON p.request_id=r.request_id WHERE p.request_id IS NULL OR COALESCE(p.version,0)<? ORDER BY r.id`, previewVersion)
 	if err != nil {
 		return err
 	}
-	type candidate struct{ requestID, originalRef, responseRef string }
+	type candidate struct{ requestID, sessionID, originalRef, responseRef, facets string }
 	var candidates []candidate
 	for rows.Next() {
 		var item candidate
-		if err = rows.Scan(&item.requestID, &item.originalRef, &item.responseRef); err != nil {
+		if err = rows.Scan(&item.requestID, &item.sessionID, &item.originalRef, &item.responseRef, &item.facets); err != nil {
 			rows.Close()
 			return err
 		}
@@ -287,10 +281,11 @@ func (s *Store) RepairRecordPreviews(ctx context.Context) error {
 			return beginErr
 		}
 		for _, item := range candidates[offset:end] {
-			var summary, responsePreview string
+			var summary, responsePreview, threadSource string
 			if item.originalRef != "" {
 				if body, loadErr := s.LoadPayload(item.originalRef); loadErr == nil {
 					summary = extractConversationSummary(body)
+					threadSource = extractThreadSource(body)
 				}
 			}
 			if item.responseRef != "" {
@@ -298,11 +293,26 @@ func (s *Store) RepairRecordPreviews(ctx context.Context) error {
 					responsePreview = extractResponsePreview(body)
 				}
 			}
-			if _, err = tx.Exec(`UPDATE records SET summary=CASE WHEN ?<>'' THEN ? ELSE summary END,response_preview=CASE WHEN ?<>'' THEN ? ELSE response_preview END WHERE request_id=?`, summary, summary, responsePreview, responsePreview, item.requestID); err != nil {
+			facets := map[string][]string{}
+			_ = json.Unmarshal([]byte(item.facets), &facets)
+			if threadSource != "" {
+				facets["thread.source"] = appendUnique(facets["thread.source"], threadSource)
+			}
+			if _, err = tx.Exec(`UPDATE records SET summary=CASE WHEN ?<>'' THEN ? ELSE summary END,response_preview=CASE WHEN ?<>'' THEN ? ELSE response_preview END,facets_json=? WHERE request_id=?`, summary, summary, responsePreview, responsePreview, facetsJSON(facets), item.requestID); err != nil {
 				tx.Rollback()
 				return err
 			}
-			if _, err = tx.Exec(`INSERT OR IGNORE INTO previewed_requests(request_id) VALUES(?)`, item.requestID); err != nil {
+			if threadSource != "" {
+				if _, err = tx.Exec(`INSERT OR IGNORE INTO record_facets(request_id,name,value) VALUES(?,'thread.source',?)`, item.requestID, threadSource); err != nil {
+					tx.Rollback()
+					return err
+				}
+				if _, err = tx.Exec(`INSERT OR IGNORE INTO session_facets(session_id,name,value) VALUES(?,'thread.source',?)`, item.sessionID, threadSource); err != nil {
+					tx.Rollback()
+					return err
+				}
+			}
+			if _, err = tx.Exec(`INSERT INTO previewed_requests(request_id,version) VALUES(?,?) ON CONFLICT(request_id) DO UPDATE SET version=excluded.version`, item.requestID, previewVersion); err != nil {
 				tx.Rollback()
 				return err
 			}
@@ -315,7 +325,7 @@ func (s *Store) RepairRecordPreviews(ctx context.Context) error {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	_, _ = s.DB.ExecContext(ctx, `INSERT INTO repair_versions(name,version) VALUES('record_preview',2) ON CONFLICT(name) DO UPDATE SET version=excluded.version`)
+	_, _ = s.DB.ExecContext(ctx, `INSERT INTO repair_versions(name,version) VALUES('record_preview',?) ON CONFLICT(name) DO UPDATE SET version=excluded.version`, previewVersion)
 	return nil
 }
 

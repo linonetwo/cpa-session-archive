@@ -46,7 +46,7 @@ func TestSessionsFilteredKeepsNewestSessionsAndFirstSummary(t *testing.T) {
 	defer store.DB.Close()
 	now := time.Now()
 	records := []Record{
-		{RequestID: "old-1", SessionID: "old", Summary: "Old session first request", StartedAt: now, CompletedAt: now, Facets: map[string][]string{"request.kind": {"turn"}}},
+		{RequestID: "old-1", SessionID: "old", Summary: "Old session first request", StartedAt: now, CompletedAt: now, Facets: map[string][]string{"request.kind": {"turn"}, "thread.source": {"user"}}},
 		{RequestID: "old-2", SessionID: "old", Summary: "Old session later request", StartedAt: now.Add(time.Second), CompletedAt: now.Add(time.Second), Facets: map[string][]string{"request.kind": {"turn"}}},
 		{RequestID: "new-1", SessionID: "new", Summary: "New session", StartedAt: now.Add(2 * time.Second), CompletedAt: now.Add(2 * time.Second), Facets: map[string][]string{"request.kind": {"compaction"}}},
 	}
@@ -66,6 +66,9 @@ func TestSessionsFilteredKeepsNewestSessionsAndFirstSummary(t *testing.T) {
 	}
 	if len(turns) != 1 || turns[0].Requests != 2 || turns[0].Summary != "Old session first request" {
 		t.Fatalf("turn sessions=%+v", turns)
+	}
+	if len(turns[0].Kinds) != 1 || turns[0].Kinds[0] != "turn" || len(turns[0].ThreadSources) != 1 || turns[0].ThreadSources[0] != "user" {
+		t.Fatalf("session metadata=%+v", turns[0])
 	}
 }
 
