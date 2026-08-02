@@ -64,7 +64,9 @@ func TestCompletionFacetsSkipMissingMetadata(t *testing.T) {
 
 func containsFacet(values []string, wanted string) bool {
 	for _, value := range values {
-		if value == wanted { return true }
+		if value == wanted {
+			return true
+		}
 	}
 	return false
 }

@@ -2,10 +2,13 @@ package archive
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestCompactDeduplicatesAttachmentAndDropsNoise(t *testing.T) {
@@ -48,11 +51,17 @@ func TestCompactExternalizesRepeatedLargeText(t *testing.T) {
 func TestCompactKeepsOnlyCompletedSSETerminalEvent(t *testing.T) {
 	raw := []byte(`event: response.createddata: {"type":"response.created","response":{"id":"r"}}event: response.output_text.deltadata: {"type":"response.output_text.delta","delta":"duplicate"}event: response.completeddata: {"type":"response.completed","response":{"id":"r","output":[{"text":"final"}]}}`)
 	manifest, blobs, err := CompactPayload(raw)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	byHash := map[string][]byte{}
-	for _, blob := range blobs { byHash[blob.Hash] = blob.Data }
+	for _, blob := range blobs {
+		byHash[blob.Hash] = blob.Data
+	}
 	out, err := ExpandPayload(manifest, func(hash string) ([]byte, error) { return byHash[hash], nil })
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	if bytes.Contains(out, []byte("duplicate")) || !bytes.Contains(out, []byte(`"type":"response.completed"`)) || !bytes.Contains(out, []byte("final")) {
 		t.Fatalf("normalized response=%s", out)
 	}
@@ -61,8 +70,51 @@ func TestCompactKeepsOnlyCompletedSSETerminalEvent(t *testing.T) {
 func TestCompactRetainsIncompleteSSE(t *testing.T) {
 	raw := []byte(`event: response.output_text.deltadata: {"type":"response.output_text.delta","delta":"partial"}`)
 	manifest, blobs, err := CompactPayload(raw)
-	if err != nil { t.Fatal(err) }
-	if len(blobs) != 1 || blobs[0].MediaType != "" { t.Fatalf("blobs=%+v", blobs) }
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(blobs) != 1 || blobs[0].MediaType != "" {
+		t.Fatalf("blobs=%+v", blobs)
+	}
 	out, err := ExpandPayload(manifest, func(string) ([]byte, error) { return blobs[0].Data, nil })
-	if err != nil || !bytes.Equal(out, raw) { t.Fatalf("out=%s err=%v", out, err) }
+	if err != nil || !bytes.Equal(out, raw) {
+		t.Fatalf("out=%s err=%v", out, err)
+	}
+}
+
+func TestNestedBlobRefsFindsManifestChildrenOnly(t *testing.T) {
+	refs := nestedBlobRefs([]byte(`{"input":[{"$cpa_blob":"sha256:child","encoding":"utf8"}],"ordinary":"sha256:not-a-ref"}`))
+	if len(refs) != 1 || refs[0] != "sha256:child" {
+		t.Fatalf("refs=%v", refs)
+	}
+}
+
+func TestGCKeepsNestedContentAddressedBlobs(t *testing.T) {
+	store, err := OpenStore(filepath.Join(t.TempDir(), "archive.sqlite"), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.DB.Close()
+	now := time.Now()
+	payload := []byte(`{"input":"` + strings.Repeat("important history ", 5000) + `"}`)
+	if err = store.PutBatch([]Record{{RequestID: "request", SessionID: "session", StartedAt: now, CompletedAt: now, OriginalRequest: payload}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.DB.Exec(`INSERT INTO blobs(hash,media_type,raw_size,codec,data) VALUES('sha256:orphan','',1,'raw',X'00')`); err != nil {
+		t.Fatal(err)
+	}
+	deleted, err := store.GC()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted != 1 {
+		t.Fatalf("deleted=%d", deleted)
+	}
+	record, err := store.Request(context.Background(), "request")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(record.OriginalRequest, payload) {
+		t.Fatal("GC removed a nested live blob")
+	}
 }

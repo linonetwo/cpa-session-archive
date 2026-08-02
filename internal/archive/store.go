@@ -46,7 +46,7 @@ func OpenStore(path string, storeUpstream bool) (*Store, error) {
 	if e != nil {
 		return nil, e
 	}
-	schema := `CREATE TABLE IF NOT EXISTS records(id INTEGER PRIMARY KEY,request_id TEXT NOT NULL UNIQUE,trace_id TEXT,session_id TEXT NOT NULL,key_id TEXT,source_format TEXT,requested_model TEXT,model TEXT,stream INTEGER,outcome TEXT,status_code INTEGER,error TEXT,started_at TEXT,completed_at TEXT,parent_response_id TEXT,response_id TEXT,original_request_gz BLOB,upstream_request_gz BLOB,response_gz BLOB,truncated INTEGER,metadata_json TEXT);CREATE TABLE IF NOT EXISTS record_facets(request_id TEXT NOT NULL,name TEXT NOT NULL,value TEXT NOT NULL,PRIMARY KEY(request_id,name,value));CREATE INDEX IF NOT EXISTS idx_facets_name_value ON record_facets(name,value);CREATE TABLE IF NOT EXISTS blobs(hash TEXT PRIMARY KEY,media_type TEXT,raw_size INTEGER NOT NULL,codec TEXT NOT NULL,data BLOB NOT NULL);CREATE INDEX IF NOT EXISTS idx_records_session_time ON records(session_id,started_at);CREATE INDEX IF NOT EXISTS idx_records_key_time ON records(key_id,started_at);CREATE INDEX IF NOT EXISTS idx_records_model_time ON records(requested_model,started_at);CREATE TABLE IF NOT EXISTS session_summaries(session_id TEXT PRIMARY KEY,requests INTEGER NOT NULL,first_at TEXT NOT NULL,last_at TEXT NOT NULL,key_id TEXT NOT NULL DEFAULT '',model TEXT NOT NULL DEFAULT '',project TEXT NOT NULL DEFAULT '',summary TEXT NOT NULL DEFAULT '',summary_at TEXT NOT NULL DEFAULT '');CREATE TABLE IF NOT EXISTS session_facets(session_id TEXT NOT NULL,name TEXT NOT NULL,value TEXT NOT NULL,PRIMARY KEY(session_id,name,value));CREATE INDEX IF NOT EXISTS idx_session_facets_name_value ON session_facets(name,value);CREATE TABLE IF NOT EXISTS session_indexed_requests(request_id TEXT PRIMARY KEY,session_id TEXT NOT NULL);CREATE TABLE IF NOT EXISTS normalized_response_requests(request_id TEXT PRIMARY KEY);CREATE TABLE IF NOT EXISTS previewed_requests(request_id TEXT PRIMARY KEY);`
+	schema := `CREATE TABLE IF NOT EXISTS records(id INTEGER PRIMARY KEY,request_id TEXT NOT NULL UNIQUE,trace_id TEXT,session_id TEXT NOT NULL,key_id TEXT,source_format TEXT,requested_model TEXT,model TEXT,stream INTEGER,outcome TEXT,status_code INTEGER,error TEXT,started_at TEXT,completed_at TEXT,parent_response_id TEXT,response_id TEXT,original_request_gz BLOB,upstream_request_gz BLOB,response_gz BLOB,truncated INTEGER,metadata_json TEXT);CREATE TABLE IF NOT EXISTS record_facets(request_id TEXT NOT NULL,name TEXT NOT NULL,value TEXT NOT NULL,PRIMARY KEY(request_id,name,value));CREATE INDEX IF NOT EXISTS idx_facets_name_value ON record_facets(name,value);CREATE TABLE IF NOT EXISTS blobs(hash TEXT PRIMARY KEY,media_type TEXT,raw_size INTEGER NOT NULL,codec TEXT NOT NULL,data BLOB NOT NULL);CREATE INDEX IF NOT EXISTS idx_records_session_time ON records(session_id,started_at);CREATE INDEX IF NOT EXISTS idx_records_key_time ON records(key_id,started_at);CREATE INDEX IF NOT EXISTS idx_records_model_time ON records(requested_model,started_at);CREATE TABLE IF NOT EXISTS session_summaries(session_id TEXT PRIMARY KEY,requests INTEGER NOT NULL,first_at TEXT NOT NULL,last_at TEXT NOT NULL,key_id TEXT NOT NULL DEFAULT '',model TEXT NOT NULL DEFAULT '',project TEXT NOT NULL DEFAULT '',summary TEXT NOT NULL DEFAULT '',summary_at TEXT NOT NULL DEFAULT '');CREATE TABLE IF NOT EXISTS session_facets(session_id TEXT NOT NULL,name TEXT NOT NULL,value TEXT NOT NULL,PRIMARY KEY(session_id,name,value));CREATE INDEX IF NOT EXISTS idx_session_facets_name_value ON session_facets(name,value);CREATE TABLE IF NOT EXISTS session_indexed_requests(request_id TEXT PRIMARY KEY,session_id TEXT NOT NULL);CREATE TABLE IF NOT EXISTS normalized_response_requests(request_id TEXT PRIMARY KEY);CREATE TABLE IF NOT EXISTS previewed_requests(request_id TEXT PRIMARY KEY);CREATE TABLE IF NOT EXISTS repair_versions(name TEXT PRIMARY KEY,version INTEGER NOT NULL);`
 	if _, e = db.Exec(schema); e != nil {
 		return nil, e
 	}
@@ -179,7 +179,12 @@ type FacetCount struct {
 }
 
 func (s *Store) Facets(ctx context.Context) ([]FacetCount, error) {
-	rows, e := s.DB.QueryContext(ctx, `SELECT name,value,COUNT(*) FROM session_facets GROUP BY name,value ORDER BY name,COUNT(*) DESC LIMIT 5000`)
+	rows, e := s.DB.QueryContext(ctx, `WITH ranked AS (
+		SELECT name,value,COUNT(*) AS sessions,ROW_NUMBER() OVER(PARTITION BY name ORDER BY COUNT(*) DESC,value) AS rank
+		FROM session_facets
+		WHERE name NOT IN ('request.id','trace.id','response.id','turn.id','window.id','tool.call_id')
+		GROUP BY name,value
+	) SELECT name,value,sessions FROM ranked WHERE rank<=100 ORDER BY name,sessions DESC,value`)
 	if e != nil {
 		return nil, e
 	}
@@ -247,7 +252,7 @@ type SessionPage struct {
 	Offset  int      `json:"offset"`
 }
 
-func (s *Store) SessionMetadataRange(ctx context.Context, id string, limit, offset int, filters map[string]string) (SessionPage, error) {
+func (s *Store) SessionMetadataRange(ctx context.Context, id string, limit, offset int, order string, filters map[string]string) (SessionPage, error) {
 	out := SessionPage{Records: []Record{}, Limit: limit, Offset: offset}
 	where := []string{"session_id=?"}
 	args := []any{id}
@@ -260,7 +265,11 @@ func (s *Store) SessionMetadataRange(ctx context.Context, id string, limit, offs
 		return out, e
 	}
 	queryArgs := append(append([]any{}, args...), limit, offset)
-	rows, e := s.DB.QueryContext(ctx, `SELECT request_id,trace_id,COALESCE(key_id,''),COALESCE(summary,''),COALESCE(response_preview,''),COALESCE(source_format,''),COALESCE(requested_model,''),COALESCE(model,''),stream,COALESCE(outcome,''),status_code,COALESCE(error,''),started_at,completed_at,COALESCE(parent_response_id,''),COALESCE(response_id,''),truncated,COALESCE(metadata_json,''),COALESCE(facets_json,'') FROM records WHERE `+clause+` ORDER BY started_at LIMIT ? OFFSET ?`, queryArgs...)
+	direction := "ASC"
+	if strings.EqualFold(order, "desc") {
+		direction = "DESC"
+	}
+	rows, e := s.DB.QueryContext(ctx, `SELECT request_id,trace_id,COALESCE(key_id,''),COALESCE(summary,''),COALESCE(response_preview,''),COALESCE(source_format,''),COALESCE(requested_model,''),COALESCE(model,''),stream,COALESCE(outcome,''),status_code,COALESCE(error,''),started_at,completed_at,COALESCE(parent_response_id,''),COALESCE(response_id,''),truncated,COALESCE(metadata_json,''),COALESCE(facets_json,'') FROM records WHERE `+clause+` ORDER BY started_at `+direction+`,id `+direction+` LIMIT ? OFFSET ?`, queryArgs...)
 	if e != nil {
 		return out, e
 	}
@@ -391,24 +400,51 @@ func (s *Store) Request(ctx context.Context, id string) (Record, error) {
 // the same durable session. Responses API tool outputs are commonly submitted
 // in the next client request, so request-local inspection alone cannot pair a
 // function_call with its function_call_output.
-func (s *Store) RequestContext(ctx context.Context, id string, limit int) ([]Record, error) {
+func (s *Store) RequestContext(ctx context.Context, id string, before, limit int) ([]Record, error) {
 	if limit < 1 {
 		limit = 8
 	}
 	if limit > 32 {
 		limit = 32
 	}
+	if before < 0 {
+		before = 0
+	}
+	if before > 4 {
+		before = 4
+	}
 	var sessionID string
 	var recordID int64
 	if err := s.DB.QueryRowContext(ctx, `SELECT session_id,id FROM records WHERE request_id=? LIMIT 1`, id).Scan(&sessionID, &recordID); err != nil {
 		return nil, err
+	}
+	ids := make([]string, 0, before+limit)
+	if before > 0 {
+		previousRows, previousErr := s.DB.QueryContext(ctx, `SELECT request_id FROM records WHERE session_id=? AND id<? ORDER BY id DESC LIMIT ?`, sessionID, recordID, before)
+		if previousErr != nil {
+			return nil, previousErr
+		}
+		var reversed []string
+		for previousRows.Next() {
+			var requestID string
+			if previousErr = previousRows.Scan(&requestID); previousErr != nil {
+				previousRows.Close()
+				return nil, previousErr
+			}
+			reversed = append(reversed, requestID)
+		}
+		if previousErr = previousRows.Close(); previousErr != nil {
+			return nil, previousErr
+		}
+		for index := len(reversed) - 1; index >= 0; index-- {
+			ids = append(ids, reversed[index])
+		}
 	}
 	rows, err := s.DB.QueryContext(ctx, `SELECT request_id FROM records WHERE session_id=? AND id>=? ORDER BY id LIMIT ?`, sessionID, recordID, limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	ids := make([]string, 0, limit)
 	for rows.Next() {
 		var requestID string
 		if err = rows.Scan(&requestID); err != nil {
@@ -583,11 +619,99 @@ func (s *Store) MigrateLegacy() {
 	}
 }
 func (s *Store) GC() (int64, error) {
-	res, e := s.DB.Exec(`DELETE FROM blobs WHERE hash NOT IN (SELECT original_ref FROM records WHERE original_ref!='' UNION SELECT upstream_ref FROM records WHERE upstream_ref!='' UNION SELECT response_ref FROM records WHERE response_ref!='')`)
-	if e != nil {
-		return 0, e
+	tx, err := s.DB.Begin()
+	if err != nil {
+		return 0, err
 	}
-	return res.RowsAffected()
+	defer tx.Rollback()
+	reachable := map[string]bool{}
+	rows, err := tx.Query(`SELECT original_ref FROM records WHERE original_ref!='' UNION SELECT upstream_ref FROM records WHERE upstream_ref!='' UNION SELECT response_ref FROM records WHERE response_ref!=''`)
+	if err != nil {
+		return 0, err
+	}
+	var queue []string
+	for rows.Next() {
+		var hash string
+		if err = rows.Scan(&hash); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		queue = append(queue, hash)
+	}
+	if err = rows.Close(); err != nil {
+		return 0, err
+	}
+	for len(queue) > 0 {
+		hash := queue[len(queue)-1]
+		queue = queue[:len(queue)-1]
+		if reachable[hash] {
+			continue
+		}
+		reachable[hash] = true
+		var codec string
+		var data []byte
+		if err = tx.QueryRow(`SELECT codec,data FROM blobs WHERE hash=?`, hash).Scan(&codec, &data); err != nil {
+			return 0, err
+		}
+		if codec == "gzip" {
+			data = gunzipBytes(data)
+		}
+		queue = append(queue, nestedBlobRefs(data)...)
+	}
+	all, err := tx.Query(`SELECT hash FROM blobs`)
+	if err != nil {
+		return 0, err
+	}
+	var stale []string
+	for all.Next() {
+		var hash string
+		if err = all.Scan(&hash); err != nil {
+			all.Close()
+			return 0, err
+		}
+		if !reachable[hash] {
+			stale = append(stale, hash)
+		}
+	}
+	if err = all.Close(); err != nil {
+		return 0, err
+	}
+	for _, hash := range stale {
+		if _, err = tx.Exec(`DELETE FROM blobs WHERE hash=?`, hash); err != nil {
+			return 0, err
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		return 0, err
+	}
+	return int64(len(stale)), nil
+}
+
+func nestedBlobRefs(raw []byte) []string {
+	var root any
+	if json.Unmarshal(raw, &root) != nil {
+		return nil
+	}
+	var out []string
+	var walk func(any)
+	walk = func(value any) {
+		switch item := value.(type) {
+		case []any:
+			for _, child := range item {
+				walk(child)
+			}
+		case map[string]any:
+			if hash, ok := item["$cpa_blob"].(string); ok && hash != "" {
+				out = append(out, hash)
+				return
+			}
+			for _, child := range item {
+				walk(child)
+			}
+		}
+	}
+	walk(root)
+	return out
 }
 
 var _ = errors.Is

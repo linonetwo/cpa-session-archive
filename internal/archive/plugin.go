@@ -148,7 +148,7 @@ func (p *Plugin) configure(raw []byte) ([]byte, error) {
 		p.wg.Add(1)
 		go p.sender()
 	}
-	reg := map[string]any{"schema_version": 2, "metadata": map[string]any{"Name": "cpa-session-archive", "Version": "0.6.1", "Author": "OneTwo", "GitHubRepository": "https://github.com/linonetwo/cpa-session-archive", "ConfigFields": []any{}}, "capabilities": map[string]any{"request_interceptor": true, "request_lifecycle_plugin": true, "response_interceptor": true, "response_stream_interceptor": true, "management_api": true}}
+	reg := map[string]any{"schema_version": 2, "metadata": map[string]any{"Name": "cpa-session-archive", "Version": "0.7.0", "Author": "OneTwo", "GitHubRepository": "https://github.com/linonetwo/cpa-session-archive", "ConfigFields": []any{}}, "capabilities": map[string]any{"request_interceptor": true, "request_lifecycle_plugin": true, "response_interceptor": true, "response_stream_interceptor": true, "management_api": true}}
 	return ok(reg)
 }
 func (p *Plugin) captureRequest(r intercept, afterAuth bool) {
@@ -556,46 +556,63 @@ func extractConversationSummary(body []byte) string {
 		return ""
 	}
 	var candidates []string
-	var walk func(any, bool)
-	walk = func(value any, user bool) {
+	var walk func(any)
+	walk = func(value any) {
 		switch item := value.(type) {
 		case map[string]any:
 			role, _ := item["role"].(string)
-			isUser := user || strings.EqualFold(role, "user")
-			if isUser {
+			if strings.EqualFold(role, "user") {
 				for _, key := range []string{"text", "prompt", "content", "input"} {
-					walk(item[key], true)
+					collectSummaryStrings(item[key], &candidates)
 				}
 			}
-			walk(item["input"], isUser || role == "")
-			for _, key := range []string{"messages", "content"} {
-				walk(item[key], isUser)
+			for _, key := range []string{"input", "messages"} {
+				walk(item[key])
 			}
 		case []any:
 			for _, child := range item {
-				walk(child, user)
-			}
-		case string:
-			if user {
-				value := meaningfulSummary(item)
-				if value != "" {
-					candidates = append(candidates, value)
-				}
+				walk(child)
 			}
 		}
 	}
-	walk(root, false)
+	walk(root)
+	// Some OpenAI-compatible clients send a plain string instead of structured
+	// role-tagged messages.
+	if len(candidates) == 0 {
+		if object, ok := root.(map[string]any); ok {
+			collectSummaryStrings(object["input"], &candidates)
+		}
+	}
 	if len(candidates) == 0 {
 		return ""
 	}
 	return candidates[len(candidates)-1]
+}
+
+func collectSummaryStrings(value any, candidates *[]string) {
+	switch item := value.(type) {
+	case string:
+		if summary := meaningfulSummary(item); summary != "" {
+			*candidates = append(*candidates, summary)
+		}
+	case []any:
+		for _, child := range item {
+			collectSummaryStrings(child, candidates)
+		}
+	case map[string]any:
+		for _, key := range []string{"text", "input_text", "content"} {
+			if child, ok := item[key]; ok {
+				collectSummaryStrings(child, candidates)
+			}
+		}
+	}
 }
 func meaningfulSummary(value string) string {
 	value = strings.TrimSpace(value)
 	for {
 		lower := strings.ToLower(value)
 		matched := false
-		for _, tag := range []string{"environment_context", "environment_info", "workspace_info", "in-app-browser-context", "app-context"} {
+		for _, tag := range []string{"environment_context", "environment_info", "workspace_info", "in-app-browser-context", "app-context", "context", "editorcontext", "reminderinstructions"} {
 			open := "<" + tag
 			if !strings.HasPrefix(lower, open) {
 				continue

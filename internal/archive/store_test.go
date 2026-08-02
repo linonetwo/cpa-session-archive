@@ -56,7 +56,7 @@ func TestRequestContextIncludesFollowingToolResult(t *testing.T) {
 	if err = s.PutBatch(records); err != nil {
 		t.Fatal(err)
 	}
-	contextRecords, err := s.RequestContext(context.Background(), "call", 16)
+	contextRecords, err := s.RequestContext(context.Background(), "call", 0, 16)
 	if err != nil {
 		t.Fatal(err)
 	}

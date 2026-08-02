@@ -365,6 +365,17 @@
       .response-snippet { margin-top:6px; color:#08745b; line-height:1.5; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
       .pagination { display:flex; justify-content:center; align-items:center; gap:12px; margin:18px 0; }
       .pagination button:disabled { cursor:not-allowed; opacity:.45; }
+      .pagination input { width:72px; text-align:center; }
+      .kind-badge { display:inline-flex; align-items:center; border-radius:999px; padding:3px 9px; font-size:12px; font-weight:700; background:#eef2ff; color:#4338ca; margin-right:8px; }
+      .kind-badge.compaction { background:#f3e8ff; color:#7e22ce; }
+      .kind-badge.retry { background:#fff7ed; color:#c2410c; }
+      .kind-badge.history_snapshot,.kind-badge.context_rebuild { background:#ecfeff; color:#0e7490; }
+      .download-notice { display:none; margin:12px 0; padding:12px 14px; border-radius:10px; background:#eff6ff; border:1px solid #bfdbfe; }
+      .download-notice.open { display:block; }
+      .download-notice a { font-weight:700; word-break:break-all; }
+      .system-context { margin:10px 0; border:1px solid #d0d5dd; border-radius:10px; padding:10px 12px; background:#f8fafc; }
+      .system-context summary { cursor:pointer; font-weight:700; }
+      .system-context pre { max-height:65vh; overflow:auto; white-space:pre-wrap; word-break:break-word; }
       .export-controls { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
       .export-controls select { padding:8px; border:1px solid #ccd3dc; border-radius:6px; background:#fff; }
       .diagnostic-grid,.tool-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:10px; margin:12px 0; }
@@ -439,6 +450,7 @@
             <h2 data-i18n="sessionsTitle"></h2>
             <div class="export-controls"><span id="resultCount" class="muted"></span><select id="allExportFormat"><option value="archive" data-i18n="archiveFormat"></option><option value="sft" data-i18n="sftFormat"></option></select><button data-i18n="exportAll" onclick="downloadExport('all')"></button></div>
           </div>
+          <div id="allDownloadNotice" class="download-notice"></div>
           <div class="table-wrap">
             <table>
               <thead>
@@ -460,12 +472,13 @@
       <div class="route-shell">
         <div class="drawer-head">
           <button class="back-button" data-i18n="backToSessions" onclick="goSessions()"></button>
-          <div class="export-controls"><select id="sessionExportFormat"><option value="archive" data-i18n="archiveFormat"></option><option value="sft" data-i18n="sftFormat"></option></select><button id="download" data-i18n="exportSession"></button></div>
+          <div class="export-controls"><select id="sessionOrder" onchange="loadSessionPage(1)"><option value="desc" data-i18n="newestFirst"></option><option value="asc" data-i18n="oldestFirst"></option></select><select id="sessionExportFormat"><option value="archive" data-i18n="archiveFormat"></option><option value="sft" data-i18n="sftFormat"></option></select><button id="download" data-i18n="exportSession"></button></div>
         </div>
         <h2 id="detailTitle"></h2>
         <p id="detailMeta" class="muted"></p>
+        <div id="downloadNotice" class="download-notice"></div>
         <div id="detail"></div>
-        <nav id="pagination" class="pagination"><button id="pagePrevious" data-i18n="previousPage" onclick="changeSessionPage(-1)"></button><strong id="pageInfo"></strong><button id="pageNext" data-i18n="nextPage" onclick="changeSessionPage(1)"></button></nav>
+        <nav id="pagination" class="pagination"><button id="pageFirst" data-i18n="firstPage" onclick="goSessionPage(1)"></button><button id="pagePrevious" data-i18n="previousPage" onclick="changeSessionPage(-1)"></button><strong id="pageInfo"></strong><label><span data-i18n="jumpToPage"></span> <input id="pageJump" type="number" min="1" onchange="goSessionPage(this.value)" /></label><button id="pageNext" data-i18n="nextPage" onclick="changeSessionPage(1)"></button><button id="pageLast" data-i18n="lastPage" onclick="goLastSessionPage()"></button></nav>
       </div>
     </div>
     <div id="requestView" class="route-page">
@@ -518,13 +531,18 @@
           exportAll: "下载全库",
           archiveFormat: "无损归档 JSONL",
           sftFormat: "后训练 SFT JSONL",
+          newestFirst: "最新优先",
+          oldestFirst: "最早优先",
           executingQuery: "正在执行的参数化 SQL（敏感值未展开）",
           loadingSessions: "正在查询会话列表…",
           loadingSession: "正在查询 Session 请求索引…",
           loadingRequest: "正在按需加载完整请求、响应和工具结果…",
-          loadingExport: "正在申请一次性流式下载票据…",
+          loadingExport: "正在准备可重复下载的流式链接…",
+          firstPage: "首页",
           previousPage: "上一页",
           nextPage: "下一页",
+          lastPage: "末页",
+          jumpToPage: "跳到",
           pageInfo: "第 {page} / {pages} 页 · 共 {total} 条",
           sessionsTitle: "归档会话",
           untitled: "未命名会话",
@@ -585,6 +603,17 @@
           noReadableContent: "没有可直接阅读的文本内容",
           attachment: "多媒体附件",
           expandFull: "展开完整内容",
+          downloadReady: "下载链接已生成，30 分钟内可重复使用。如果浏览器没有自动保存文件，请点击：",
+          kindTurn: "普通请求",
+          kindRetry: "重试请求",
+          kindCompaction: "上下文压缩请求",
+          kindHistorySnapshot: "归档接入时的历史快照",
+          kindContextRebuild: "压缩后的上下文重建",
+          kindToolContinuation: "工具结果续传",
+          historyItemsFolded: "已折叠 {count} 项历史上下文；本页只展示相对上一请求新增的内容。",
+          retryNoDelta: "本次请求与上一请求的输入完全相同，属于重试；未重复展示历史内容。",
+          viewSystem: "展开系统指令",
+          contentTruncated: "此项内容过长，完整内容请在原始载荷或工具详情中查看。",
         },
         en: {
           title: "Session Archive",
@@ -610,13 +639,18 @@
           exportAll: "Download all sessions",
           archiveFormat: "Lossless archive JSONL",
           sftFormat: "Post-training SFT JSONL",
+          newestFirst: "Newest first",
+          oldestFirst: "Oldest first",
           executingQuery: "Parameterized SQL in progress (sensitive values omitted)",
           loadingSessions: "Querying session list…",
           loadingSession: "Querying the session request index…",
           loadingRequest: "Loading the full request, response and tool results on demand…",
-          loadingExport: "Requesting a one-time streaming download ticket…",
+          loadingExport: "Preparing a reusable streaming download link…",
+          firstPage: "First",
           previousPage: "Previous",
           nextPage: "Next",
+          lastPage: "Last",
+          jumpToPage: "Go to",
           pageInfo: "Page {page} / {pages} · {total} records",
           sessionsTitle: "Archived sessions",
           untitled: "Untitled session",
@@ -677,6 +711,17 @@
           noReadableContent: "No directly readable text content",
           attachment: "Media attachment",
           expandFull: "Expand full content",
+          downloadReady: "The download link is ready and reusable for 30 minutes. If the browser does not save the file automatically, click:",
+          kindTurn: "Regular request",
+          kindRetry: "Retry",
+          kindCompaction: "Context compaction request",
+          kindHistorySnapshot: "History snapshot at archive start",
+          kindContextRebuild: "Context rebuilt after compaction",
+          kindToolContinuation: "Tool result continuation",
+          historyItemsFolded: "{count} historical context items were folded. This page shows only content added since the previous request.",
+          retryNoDelta: "This input is identical to the previous request and is a retry; repeated history is not rendered again.",
+          viewSystem: "Expand system instructions",
+          contentTruncated: "This item is long. Open the raw payload or tool detail to see the complete content.",
         },
       };
       var locale = /^zh/i.test(
@@ -1219,16 +1264,19 @@
       async function loadSessionPage(pageNumber) {
         detailPage = Math.max(1, pageNumber || detailPage || 1);
         var baseOffset = (detailPage - 1) * detailPageSize;
+		var order = document.getElementById("sessionOrder").value || "desc";
+		var queryOffset = Math.max(0, baseOffset - 1), hasPrevious = baseOffset > 0;
         var page = await api(
           "/sessions?id=" +
             encodeURIComponent(detailSessionID) +
-            "&limit=" + detailPageSize + "&offset=" +
-            baseOffset +
+            "&limit=" + (detailPageSize + (hasPrevious ? 1 : 0)) + "&offset=" +
+            queryOffset + "&order=" + order +
             "&metadata_only=true",
           t("loadingSession"), sqlTemplates.session,
         );
         detailTotal = page.total;
-        detailRecords = page.records || [];
+		var loadedRecords = page.records || [], previousRecord = hasPrevious ? loadedRecords.shift() : null;
+		detailRecords = loadedRecords.slice(0, detailPageSize);
         if (detailRecords[0]) {
           var first = detailRecords[0];
           var selected = sessionsByID[detailSessionID] || {};
@@ -1246,25 +1294,35 @@
             localTime(first.started_at);
         }
         document.getElementById("detail").innerHTML =
-          (page.records || [])
+          detailRecords
             .map(function (record, index) {
-              return renderRequestSummary(record, baseOffset + index + 1);
+			  var prior = index ? detailRecords[index - 1] : previousRecord;
+              return renderRequestSummary(record, baseOffset + index + 1, prior);
             })
             .join("");
         var pages = Math.max(1, Math.ceil(detailTotal / detailPageSize));
         document.getElementById("pageInfo").textContent = t("pageInfo",{page:detailPage,pages:pages,total:detailTotal});
         document.getElementById("pagePrevious").disabled = detailPage <= 1;
         document.getElementById("pageNext").disabled = detailPage >= pages;
+		document.getElementById("pageFirst").disabled = detailPage <= 1;
+		document.getElementById("pageLast").disabled = detailPage >= pages;
+		document.getElementById("pageJump").value = detailPage;
+		document.getElementById("pageJump").max = pages;
         document.getElementById("pagination").style.display = detailTotal ? "flex" : "none";
         lastDetail = detailRecords;
         window.scrollTo(0,0);
       }
       function changeSessionPage(delta) { loadSessionPage(detailPage + delta); }
-      function renderRequestSummary(record, number) {
+	  function goSessionPage(page) { var pages=Math.max(1,Math.ceil(detailTotal/detailPageSize)),value=Math.max(1,Math.min(pages,Number(page)||1));loadSessionPage(value); }
+	  function goLastSessionPage() { goSessionPage(Math.max(1,Math.ceil(detailTotal/detailPageSize))); }
+      function renderRequestSummary(record, number, previous) {
         var title = record.summary || record.requested_model || record.model || t("request") + " #" + number;
         var tools = ((record.facets || {})["tool.name"] || []).slice(0, 4);
         var responsePreview = record.response_preview || record.error || "";
-        return '<article class="panel request-list-item" onclick="openRequest(\'' + esc(record.request_id) + '\')"><div><div class="conversation-title">#' + number + ' · ' + esc(title) + '</div><div class="conversation-meta">' + esc([record.requested_model || record.model, keyName(record.key_id), tools.length ? t("toolRole") + ': ' + tools.join(", ") : ""].filter(Boolean).join(" · ")) + '</div><div class="request-snippet"><b>' + esc(t("userPreview")) + '：</b>' + esc(title) + '</div>' + (responsePreview ? '<div class="response-snippet"><b>' + esc(t("assistantPreview")) + '：</b>' + esc(responsePreview) + '</div>' : '') + '</div><div class="muted ' + (record.outcome === "succeeded" ? "status-success" : "status-error") + '">' + esc(record.outcome + " · " + record.status_code + " · " + localTime(record.started_at)) + '</div></article>';
+		var duplicate = previous && previous.summary && previous.summary === record.summary;
+		var retry = duplicate && record.outcome !== "succeeded";
+		var badge = retry ? '<span class="kind-badge retry">'+esc(t("kindRetry"))+'</span>' : duplicate ? '<span class="kind-badge">'+esc(t("kindToolContinuation"))+'</span>' : '';
+        return '<article class="panel request-list-item" onclick="openRequest(\'' + esc(record.request_id) + '\')"><div><div class="conversation-title">' + badge + '#' + number + ' · ' + esc(title) + '</div><div class="conversation-meta">' + esc([record.requested_model || record.model, keyName(record.key_id), tools.length ? t("toolRole") + ': ' + tools.join(", ") : ""].filter(Boolean).join(" · ")) + '</div><div class="request-snippet"><b>' + esc(t("userPreview")) + '：</b>' + esc(duplicate ? (retry ? t("retryNoDelta") : t("kindToolContinuation")) : title) + '</div>' + (responsePreview ? '<div class="response-snippet"><b>' + esc(t("assistantPreview")) + '：</b>' + esc(responsePreview) + '</div>' : '') + '</div><div class="muted ' + (record.outcome === "succeeded" ? "status-success" : "status-error") + '">' + esc(record.outcome + " · " + record.status_code + " · " + localTime(record.started_at)) + '</div></article>';
       }
       function openRequest(id) { location.hash = "#/sessions/" + encodeURIComponent(detailSessionID) + "/requests/" + encodeURIComponent(id); }
       async function showRequest(sessionID, requestID) {
@@ -1276,12 +1334,36 @@
         document.getElementById("requestView").classList.add("open");
         document.getElementById("requestDetail").innerHTML = "";
         detailSeenContent = new Set(); fullTexts = {};
-        var record = await api("/requests?id=" + encodeURIComponent(requestID), t("loadingRequest"), sqlTemplates.request);
-        currentRequestRecord = record;
-        document.getElementById("requestTitle").textContent = record.summary || record.requested_model || record.model || t("request");
-        document.getElementById("requestMeta").textContent = [keyName(record.key_id), record.requested_model || record.model, localTime(record.started_at)].filter(Boolean).join(" · ");
-        document.getElementById("requestDetail").innerHTML = renderRecord(record, 1);
+		var view = await api("/request-view?id=" + encodeURIComponent(requestID), t("loadingRequest"), sqlTemplates.request);
+		currentRequestRecord = null;
+		document.getElementById("requestTitle").textContent = view.summary || view.requested_model || view.model || t("request");
+		document.getElementById("requestMeta").textContent = [keyName(view.key_id), view.requested_model || view.model, localTime(view.started_at)].filter(Boolean).join(" · ");
+		document.getElementById("requestDetail").innerHTML = renderTimelineView(view);
       }
+	  function kindLabel(kind){var keys={turn:"kindTurn",retry:"kindRetry",compaction:"kindCompaction",history_snapshot:"kindHistorySnapshot",context_rebuild:"kindContextRebuild",tool_continuation:"kindToolContinuation"};return t(keys[kind]||"kindTurn");}
+	  function renderTimelineView(view){
+		var context=[];
+		if(view.history_items) context.push(t("historyItemsFolded",{count:view.history_items}));
+		if(view.system_chars) context.push('<button onclick="openRaw(\'instructions\')">'+esc(t("viewSystem")+' · '+t("systemContext",{chars:view.system_chars}))+'</button>');
+		if(view.tool_definitions) context.push(esc(t("toolDefinitions",{count:view.tool_definitions})));
+		var entries=(view.entries||[]).map(renderTimelineEntry).join("");
+		if(!entries&&view.kind==="retry") entries='<div class="context-summary">'+esc(t("retryNoDelta"))+'</div>';
+		if(!entries) entries='<div class="context-summary">'+esc(t("noReadableContent"))+'</div>';
+		return '<article class="panel request-card"><div class="request-head"><div><span class="kind-badge '+esc(view.kind)+'">'+esc(kindLabel(view.kind))+'</span><b>'+esc(view.requested_model||view.model||"")+'</b></div><span>'+esc((view.outcome||"")+" · "+(view.status_code||"")+" · "+localTime(view.started_at))+'</span></div>'+
+		  (context.length?'<div class="context-summary">'+context.join(' · ')+'</div>':'')+
+		  '<div class="conversation-stream">'+entries+'</div>'+renderRawLinks()+'</article>';
+	  }
+	  function renderTimelineEntry(entry){
+		var role=entry.role==="tool_call"||entry.role==="tool_result"?"tool":entry.role;
+		var html=renderMessage(role,entry.text||"",entry.label||entry.call_id||"");
+		if((entry.role==="tool_call"||entry.role==="tool_result")&&entry.call_id) html+='<button onclick="openToolCall(\''+esc(entry.call_id)+'\')">'+esc(t("viewTool"))+'</button>';
+		if(entry.truncated) html+='<div class="context-summary">'+esc(t("contentTruncated"))+'</div>';
+		return html;
+	  }
+	  function renderRawLinks(){
+		var parts=[{id:"request",label:t("originalRequest")},{id:"upstream",label:t("upstreamRequest")},{id:"response",label:t("originalResponse")}];
+		return '<section><h3>'+esc(t("rawDiagnostics"))+'</h3><p class="muted">'+esc(t("diagnosticsSubtitle"))+'</p><div class="diagnostic-grid">'+parts.map(function(part){return '<div class="diagnostic-card"><h3>'+esc(part.label)+'</h3><button onclick="openRaw(\''+part.id+'\')">'+esc(t("viewRaw"))+'</button></div>';}).join('')+'</div></section>';
+	  }
       async function downloadExport(scope) {
         var format = document.getElementById(scope === "all" ? "allExportFormat" : "sessionExportFormat").value || "archive";
         var popup = null;
@@ -1292,7 +1374,9 @@
           if (scope === "session") query.set("id",detailSessionID);
           var response = await fetch(session.base + "/v0/management/plugins/cpa-session-archive/export?" + query, { headers: { Authorization: "Bearer " + session.key } });
           if (!response.ok) throw Error("HTTP " + response.status + ": " + await response.text());
-          var ticket = await response.json(), url = new URL(ticket.url, session.base).href;
+		  var ticket = await response.json(), url = new URL(ticket.url, session.base).href;
+		  var notice=document.getElementById(scope === "all" ? "allDownloadNotice" : "downloadNotice");
+		  if(notice){notice.innerHTML='<div>'+esc(t("downloadReady"))+'</div><a href="'+esc(url)+'" target="_blank" rel="noopener">'+esc(ticket.filename||url)+'</a>';notice.classList.add("open");}
           if (popup) popup.location.replace(url);
           else { var link=document.createElement("a"); link.href=url; link.target="_blank"; link.rel="noopener"; document.body.appendChild(link); link.click(); link.remove(); }
         } catch (error) { if (popup) popup.close(); alert(error.message || error); }
@@ -1367,15 +1451,18 @@
       }
       function openRaw(part){location.hash="#/sessions/"+encodeURIComponent(detailSessionID)+"/requests/"+encodeURIComponent(currentRequestID)+"/raw/"+part;}
       function openTool(index){location.hash="#/sessions/"+encodeURIComponent(detailSessionID)+"/requests/"+encodeURIComponent(currentRequestID)+"/tools/"+index;}
+	  function openToolCall(callID){openTool(encodeURIComponent(callID));}
       async function ensureRequestRecord(requestID){if(currentRequestRecord&&currentRequestRecord.request_id===requestID)return currentRequestRecord; currentRequestRecord=await api("/requests?id="+encodeURIComponent(requestID),t("loadingRequest"),sqlTemplates.request); currentRequestID=requestID; return currentRequestRecord;}
       async function showRawDetail(sessionID,requestID,part){
         detailSessionID=sessionID; currentRequestID=requestID; var record=await ensureRequestRecord(requestID), labels={request:t("originalRequest"),upstream:t("upstreamRequest"),response:t("originalResponse")};
-        var encoded=part==="request"?record.original_request:part==="upstream"?record.upstream_request:record.response, text=decode64(encoded), pretty=prettyPayload(text);
+		var encoded=part==="request"||part==="instructions"?record.original_request:part==="upstream"?record.upstream_request:record.response, text=decode64(encoded);
+		if(part==="instructions"){var root=parsePayload(text);text=root&&typeof root.instructions==="string"?root.instructions:"";labels.instructions=t("systemContext",{chars:text.length});}
+		var pretty=part==="instructions"?text:prettyPayload(text);
         showSubDetail(); document.getElementById("subDetailTitle").textContent=labels[part]||t("rawDiagnostics"); document.getElementById("subDetailMeta").textContent=t("bytes",{count:new Blob([text]).size})+" · "+requestID;
         var id=retainFullText(pretty); document.getElementById("subDetail").innerHTML='<div class="diagnostic-toolbar"><span class="muted">'+esc(t("diagnosticsSubtitle"))+'</span><button onclick="copyFullText(\''+id+'\',this)">'+esc(t("copy"))+'</button></div>'+lazyPre(pretty,id);
       }
       async function showToolDetail(sessionID,requestID,index){
-		detailSessionID=sessionID; currentRequestID=requestID; var record=await ensureRequestRecord(requestID), entries=extractToolEntries(parsePayload(decode64(record.original_request)),parsePayload(decode64(record.response))), entry=entries[Number(index)];
+		detailSessionID=sessionID; currentRequestID=requestID; var record=await ensureRequestRecord(requestID), entries=extractToolEntries(parsePayload(decode64(record.original_request)),parsePayload(decode64(record.response))), selector=decodeURIComponent(String(index)), entry=/^\d+$/.test(selector)?entries[Number(selector)]:entries.find(function(candidate){return candidate.callID===selector;});
 		if(entry && !entry.output && entry.callID){
 		  var contextRecords=await api("/request-context?id="+encodeURIComponent(requestID)+"&limit=16",t("loadingRequest"),sqlTemplates.request);
 		  var values=[];
@@ -1482,7 +1569,7 @@
       }
       function renderMessage(role, text, label) {
         if (!text) return "";
-        if (role === "system") return '<div class="context-summary">' + esc(t("systemContext", { chars: text.length })) + "</div>";
+		if (role === "system") return '<details class="system-context"><summary>' + esc(t("systemContext", { chars: text.length })) + '</summary><pre>' + esc(text) + '</pre></details>';
         var roleKey = role === "assistant" ? "assistantRole" : role === "tool" ? "toolRole" : role === "compaction" ? "compactionRole" : "userRole";
         var preview = text.length > 4000 ? text.slice(0, 1400) + "…" : text;
         var id = text.length > 4000 ? retainFullText(text) : "";

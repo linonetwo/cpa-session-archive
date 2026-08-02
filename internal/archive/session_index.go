@@ -200,7 +200,13 @@ func (s *Store) NormalizeHistoricalSSE(ctx context.Context) error {
 // RepairSessionSummaries replaces transport boilerplate chosen by older
 // extractors with the last meaningful user message from the first request.
 func (s *Store) RepairSessionSummaries(ctx context.Context) error {
-	rows, err := s.DB.QueryContext(ctx, `SELECT s.session_id,COALESCE((SELECT original_ref FROM records r WHERE r.session_id=s.session_id ORDER BY r.started_at LIMIT 1),'') FROM session_summaries s WHERE s.summary='' OR lower(s.summary) LIKE '<environment_%' OR lower(s.summary) LIKE '<workspace_info>%' OR lower(s.summary) LIKE '<in-app-browser-context%' OR lower(s.summary) LIKE '<app-context>%' OR lower(s.summary) LIKE '# files mentioned by the user:%'`)
+	var version int
+	_ = s.DB.QueryRowContext(ctx, `SELECT version FROM repair_versions WHERE name='session_summary'`).Scan(&version)
+	where := ` WHERE s.summary='' OR lower(s.summary) LIKE '<environment_%' OR lower(s.summary) LIKE '<workspace_info>%' OR lower(s.summary) LIKE '<in-app-browser-context%' OR lower(s.summary) LIKE '<app-context>%' OR lower(s.summary) LIKE '<context>%' OR lower(s.summary) LIKE '&lt;context&gt;%' OR lower(s.summary) LIKE '# files mentioned by the user:%'`
+	if version < 2 {
+		where = ""
+	}
+	rows, err := s.DB.QueryContext(ctx, `SELECT s.session_id,COALESCE((SELECT original_ref FROM records r WHERE r.session_id=s.session_id ORDER BY r.started_at LIMIT 1),'') FROM session_summaries s`+where)
 	if err != nil {
 		return err
 	}
@@ -235,6 +241,7 @@ func (s *Store) RepairSessionSummaries(ctx context.Context) error {
 		}
 		repaired++
 	}
+	_, _ = s.DB.ExecContext(ctx, `INSERT INTO repair_versions(name,version) VALUES('session_summary',2) ON CONFLICT(name) DO UPDATE SET version=excluded.version`)
 	log.Printf("session summary repair complete: %d/%d updated", repaired, len(candidates))
 	return nil
 }
@@ -243,6 +250,13 @@ func (s *Store) RepairSessionSummaries(ctx context.Context) error {
 // marker table prevents non-conversational records from being re-expanded on
 // every restart.
 func (s *Store) RepairRecordPreviews(ctx context.Context) error {
+	var version int
+	_ = s.DB.QueryRowContext(ctx, `SELECT version FROM repair_versions WHERE name='record_preview'`).Scan(&version)
+	if version < 2 {
+		if _, err := s.DB.ExecContext(ctx, `DELETE FROM previewed_requests`); err != nil {
+			return err
+		}
+	}
 	rows, err := s.DB.QueryContext(ctx, `SELECT r.request_id,COALESCE(r.original_ref,''),COALESCE(r.response_ref,'') FROM records r LEFT JOIN previewed_requests p ON p.request_id=r.request_id WHERE p.request_id IS NULL ORDER BY r.id`)
 	if err != nil {
 		return err
@@ -284,7 +298,7 @@ func (s *Store) RepairRecordPreviews(ctx context.Context) error {
 					responsePreview = extractResponsePreview(body)
 				}
 			}
-			if _, err = tx.Exec(`UPDATE records SET summary=CASE WHEN COALESCE(summary,'')='' THEN ? ELSE summary END,response_preview=CASE WHEN COALESCE(response_preview,'')='' THEN ? ELSE response_preview END WHERE request_id=?`, summary, responsePreview, item.requestID); err != nil {
+			if _, err = tx.Exec(`UPDATE records SET summary=CASE WHEN ?<>'' THEN ? ELSE summary END,response_preview=CASE WHEN ?<>'' THEN ? ELSE response_preview END WHERE request_id=?`, summary, summary, responsePreview, responsePreview, item.requestID); err != nil {
 				tx.Rollback()
 				return err
 			}
@@ -301,6 +315,7 @@ func (s *Store) RepairRecordPreviews(ctx context.Context) error {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+	_, _ = s.DB.ExecContext(ctx, `INSERT INTO repair_versions(name,version) VALUES('record_preview',2) ON CONFLICT(name) DO UPDATE SET version=excluded.version`)
 	return nil
 }
 

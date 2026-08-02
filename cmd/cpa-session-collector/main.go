@@ -105,11 +105,12 @@ func main() {
 	http.HandleFunc("/v1/sessions/", s.session)
 	http.HandleFunc("/v1/requests/", s.request)
 	http.HandleFunc("/v1/request-context", s.requestContext)
+	http.HandleFunc("/v1/request-view", s.requestView)
 	http.HandleFunc("/v1/export-tickets", s.exportTicket)
 	http.HandleFunc("/archive-api/v1/exports/", s.ticketedExport)
 	http.HandleFunc("/v1/maintenance/gc", s.gc)
 	addr := env("LISTEN_ADDR", ":8080")
-	log.Printf("archive collector v0.6.1 listening on %s, db=%s, store_upstream=%v", addr, dbPath, storeUpstream)
+	log.Printf("archive collector v0.7.0 listening on %s, db=%s, store_upstream=%v", addr, dbPath, storeUpstream)
 	log.Fatal(http.ListenAndServe(addr, nil))
 }
 func env(k, d string) string {
@@ -237,13 +238,14 @@ func (s *server) session(w http.ResponseWriter, r *http.Request) {
 		}
 		if metadataOnly {
 			filters := map[string]string{}
+			order := r.URL.Query().Get("order")
 			for name, values := range r.URL.Query() {
-				if name == "limit" || name == "offset" || name == "metadata_only" || name == "preview_bytes" || len(values) == 0 {
+				if name == "limit" || name == "offset" || name == "metadata_only" || name == "preview_bytes" || name == "order" || len(values) == 0 {
 					continue
 				}
 				filters[name] = values[0]
 			}
-			out, e := s.s.SessionMetadataRange(r.Context(), id, limit, offset, filters)
+			out, e := s.s.SessionMetadataRange(r.Context(), id, limit, offset, order, filters)
 			if e != nil {
 				http.Error(w, e.Error(), 500)
 				return
@@ -294,10 +296,31 @@ func (s *server) requestContext(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	limit := 16
+	before := 0
 	if v, e := strconv.Atoi(r.URL.Query().Get("limit")); e == nil && v > 0 && v <= 32 {
 		limit = v
 	}
-	out, e := s.s.RequestContext(r.Context(), id, limit)
+	if v, e := strconv.Atoi(r.URL.Query().Get("before")); e == nil && v >= 0 && v <= 4 {
+		before = v
+	}
+	out, e := s.s.RequestContext(r.Context(), id, before, limit)
+	if e != nil {
+		if strings.Contains(strings.ToLower(e.Error()), "no rows") {
+			http.Error(w, "not found", 404)
+		} else {
+			http.Error(w, e.Error(), 500)
+		}
+		return
+	}
+	writeJSON(w, out)
+}
+func (s *server) requestView(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(r.URL.Query().Get("id"))
+	if id == "" {
+		http.Error(w, "request required", 400)
+		return
+	}
+	out, e := s.s.RequestTimeline(r.Context(), id)
 	if e != nil {
 		if strings.Contains(strings.ToLower(e.Error()), "no rows") {
 			http.Error(w, "not found", 404)
@@ -361,19 +384,21 @@ func (s *server) exportTicket(w http.ResponseWriter, r *http.Request) {
 		name += "session-" + safeFilename(sessionID)
 	}
 	name += "-" + format + ".jsonl"
-	s.tickets[token] = exportTicket{SessionID: sessionID, Scope: scope, Format: format, Filename: name, ExpiresAt: now.Add(5 * time.Minute)}
+	expiresAt := now.Add(30 * time.Minute)
+	s.tickets[token] = exportTicket{SessionID: sessionID, Scope: scope, Format: format, Filename: name, ExpiresAt: expiresAt}
 	s.ticketMu.Unlock()
-	writeJSON(w, map[string]any{"url": "/archive-api/v1/exports/" + token, "filename": name, "content_type": "application/x-ndjson", "expires_at": now.Add(5 * time.Minute)})
+	writeJSON(w, map[string]any{"url": "/archive-api/v1/exports/" + token, "filename": name, "content_type": "application/x-ndjson", "expires_at": expiresAt})
 }
 func (s *server) ticketedExport(w http.ResponseWriter, r *http.Request) {
 	token := strings.TrimPrefix(r.URL.Path, "/archive-api/v1/exports/")
 	s.ticketMu.Lock()
 	ticket, ok := s.tickets[token]
-	if ok {
+	if ok && time.Now().After(ticket.ExpiresAt) {
 		delete(s.tickets, token)
+		ok = false
 	}
 	s.ticketMu.Unlock()
-	if !ok || time.Now().After(ticket.ExpiresAt) {
+	if !ok {
 		http.Error(w, "invalid or expired export ticket", 404)
 		return
 	}

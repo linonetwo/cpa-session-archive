@@ -35,7 +35,7 @@ instead of being silently discarded.
 ## Build
 
 ~~~bash
-docker build -t cpa-session-archive:0.5.1 .
+docker build -t cpa-session-archive:0.7.0 .
 ~~~
 
 The image contains both /plugin/cpa-session-archive.so and the collector executable.
@@ -70,16 +70,20 @@ Endpoints:
 - GET /v1/sessions?limit=100
 - GET /v1/sessions/{session-id}
 - GET /v1/requests/{request-id}
+- GET /v1/request-view?id={request-id}
+- GET /v1/request-context?id={request-id}&before=0&limit=16
 - GET /v1/sessions/{session-id}/export
 - GET /v1/export-tickets?scope=session|all&format=archive|sft&session_id={session-id} (management proxy only)
-- GET /archive-api/v1/exports/{one-time-ticket}
+- GET /archive-api/v1/exports/{ticket}
 - POST /v1/maintenance/gc
 
 ## Management UI and faceted search
 
-With CPA management API support enabled, CPA-Manager-Plus shows a session archive plugin page. The page provides storage statistics, dynamic facet selectors and routed session, request, tool-call, and raw-diagnostic views. The request index is paginated and includes lightweight user/assistant previews. Tool arguments and results are paired by call ID and have a dedicated detail route. Loading states identify the parameterized SQL template without exposing filter values. Raw diagnostics and full long fields are materialized only after a click, so a large coding session does not freeze the page.
+With CPA management API support enabled, CPA-Manager-Plus shows a session archive plugin page. The page provides storage statistics, dynamic facet selectors and routed session, request, tool-call, and raw-diagnostic views. The request index is paginated in either direction and supports first/last-page jumps. Tool arguments and results are paired by call ID and have a dedicated detail route. System instructions, raw diagnostics, and long fields are materialized only after a click, so a large coding session does not freeze the page.
 
-Session and whole-database downloads first obtain a random, single-use, five-minute ticket through the authenticated management API, then stream newline-delimited JSON directly from the collector-only download path with a server-controlled `.jsonl` filename. Two formats are deliberately separate:
+Responses clients commonly resend the complete conversation in every stateless request. The archive retains those lossless protocol records, while the human timeline compares each request with its predecessor and renders only newly added messages, tool results, and assistant output. Identical retries, context compaction requests, history snapshots, and post-compaction context rebuilds are labeled explicitly instead of appearing as duplicate conversations.
+
+Session and whole-database downloads first obtain a random ticket through the authenticated management API, then stream newline-delimited JSON directly from the collector-only download path with a server-controlled `.jsonl` filename. A ticket remains reusable for 30 minutes, allowing the visible fallback link to work after an embedded browser or download manager has already probed it. Two formats are deliberately separate:
 
 - `archive` is the lossless normalized record stream. Request and response payloads remain structured JSON values instead of Base64 fields.
 - `sft` emits one deduplicated conversational sample per durable session in the broadly compatible `{"messages": [...], "tools": [...]}` shape used by OpenAI SFT and Hugging Face TRL. Function calls and tool results are preserved; inline media is replaced by a media type plus SHA-256 reference rather than copied into the training file. Preference/DPO data is not fabricated because the archive has no chosen/rejected labels.
