@@ -70,7 +70,7 @@ type completion struct {
 
 func NewPlugin() *Plugin {
 	transport := &http.Transport{
-		Proxy: nil,
+		Proxy:       nil,
 		DialContext: (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
 	}
 	return &Plugin{active: map[string]*state{}, stop: make(chan struct{}), client: &http.Client{Timeout: 5 * time.Second, Transport: transport}, max: 64 << 20}
@@ -148,7 +148,7 @@ func (p *Plugin) configure(raw []byte) ([]byte, error) {
 		p.wg.Add(1)
 		go p.sender()
 	}
-	reg := map[string]any{"schema_version": 2, "metadata": map[string]any{"Name": "cpa-session-archive", "Version": "0.4.7", "Author": "OneTwo", "GitHubRepository": "https://github.com/linonetwo/cpa-session-archive", "ConfigFields": []any{}}, "capabilities": map[string]any{"request_interceptor": true, "request_lifecycle_plugin": true, "response_interceptor": true, "response_stream_interceptor": true, "management_api": true}}
+	reg := map[string]any{"schema_version": 2, "metadata": map[string]any{"Name": "cpa-session-archive", "Version": "0.5.0", "Author": "OneTwo", "GitHubRepository": "https://github.com/linonetwo/cpa-session-archive", "ConfigFields": []any{}}, "capabilities": map[string]any{"request_interceptor": true, "request_lifecycle_plugin": true, "response_interceptor": true, "response_stream_interceptor": true, "management_api": true}}
 	return ok(reg)
 }
 func (p *Plugin) captureRequest(r intercept, afterAuth bool) {
@@ -181,9 +181,11 @@ func (p *Plugin) captureRequest(r intercept, afterAuth bool) {
 			s.OriginalRequest = limit(r.Body, p.max, &s.Truncated)
 		}
 		enrichGenericFacets(&s.Record, r.Headers, r.Body)
-		if s.Summary == "" { s.Summary = extractConversationSummary(r.Body) }
+		if s.Summary == "" {
+			s.Summary = extractConversationSummary(r.Body)
+		}
 	}
-	s.SessionID = sessionID(r.Metadata, s.OriginalRequest, s.UpstreamRequest)
+	s.SessionID = sessionID(&s.Record, r.Metadata, s.OriginalRequest, s.UpstreamRequest)
 	s.ParentResponseID = firstJSON(s.OriginalRequest, s.UpstreamRequest, "previous_response_id")
 	s.KeyID = firstNonEmpty(findString(r.Metadata, "key_name", "key_alias", "principal_name", "key_id", "principal"), findString(r.Metadata, "caller_scope"))
 }
@@ -235,7 +237,7 @@ func (p *Plugin) complete(r completion) {
 	s.StartedAt = r.StartedAt
 	s.CompletedAt = r.CompletedAt
 	if s.SessionID == "" || s.SessionID == "request:" {
-		s.SessionID = sessionID(r.Metadata, s.OriginalRequest, s.UpstreamRequest)
+		s.SessionID = sessionID(&s.Record, r.Metadata, s.OriginalRequest, s.UpstreamRequest)
 	}
 	if s.SessionID == "" || s.SessionID == "request:" {
 		s.SessionID = "request:" + r.RequestID
@@ -253,17 +255,32 @@ func (p *Plugin) complete(r completion) {
 	}
 }
 func addCompletionFacets(rec *Record) {
-	if rec.Facets == nil { rec.Facets = map[string][]string{} }
-	add := func(k, v string) { if strings.TrimSpace(v) != "" { rec.Facets[k] = []string{v} } }
-	add("session.id", rec.SessionID); add("model.requested", rec.RequestedModel); add("model.resolved", rec.Model)
-	add("source.format", rec.SourceFormat); add("outcome", rec.Outcome); add("key.id", rec.KeyID)
+	if rec.Facets == nil {
+		rec.Facets = map[string][]string{}
+	}
+	add := func(k, v string) {
+		if strings.TrimSpace(v) != "" {
+			rec.Facets[k] = []string{v}
+		}
+	}
+	add("session.id", rec.SessionID)
+	add("model.requested", rec.RequestedModel)
+	add("model.resolved", rec.Model)
+	add("source.format", rec.SourceFormat)
+	add("outcome", rec.Outcome)
+	add("key.id", rec.KeyID)
 	if rec.Metadata != nil {
-		add("provider.target", findString(rec.Metadata, "target_provider")); add("model.target", findString(rec.Metadata, "target_model"))
-		add("auth.group", findString(rec.Metadata, "group")); add("auth.id", findString(rec.Metadata, "selected_auth_id"))
-		add("caller.scope", findString(rec.Metadata, "caller_scope")); add("request.path", findString(rec.Metadata, "request_path"))
+		add("provider.target", findString(rec.Metadata, "target_provider"))
+		add("model.target", findString(rec.Metadata, "target_model"))
+		add("auth.group", findString(rec.Metadata, "group"))
+		add("auth.id", findString(rec.Metadata, "selected_auth_id"))
+		add("caller.scope", findString(rec.Metadata, "caller_scope"))
+		add("request.path", findString(rec.Metadata, "request_path"))
 	}
 	rec.Facets["stream"] = []string{fmt.Sprint(rec.Stream)}
-	if rec.StatusCode > 0 { rec.Facets["status.code"] = []string{fmt.Sprint(rec.StatusCode)} }
+	if rec.StatusCode > 0 {
+		rec.Facets["status.code"] = []string{fmt.Sprint(rec.StatusCode)}
+	}
 }
 func (p *Plugin) sender() {
 	defer p.wg.Done()
@@ -354,14 +371,19 @@ func responseID(b []byte) string {
 	}
 	return ""
 }
-func sessionID(m map[string]any, bs ...[]byte) string {
-	if v := findString(m, "execution_session_id", "derived_session_id"); v != "" {
-		return v
+func sessionID(rec *Record, m map[string]any, bs ...[]byte) string {
+	// Codex Desktop creates a new execution_session_id for retries and remote
+	// executions inside one visible task.  The thread identity carried by the
+	// client is the durable archive boundary; execution IDs remain metadata.
+	if rec != nil {
+		if v := firstNonEmpty(rec.ThreadID, stableWindowID(rec.WindowID)); v != "" {
+			return v
+		}
 	}
 	for _, b := range bs {
-		for _, k := range []string{"session_id", "prompt_cache_key", "client_metadata.x-codex-window-id"} {
+		for _, k := range []string{"thread_id", "session_id", "client_metadata.thread_id", "client_metadata.session_id", "prompt_cache_key", "client_metadata.x-codex-window-id"} {
 			if v := gjson.GetBytes(b, k).String(); v != "" {
-				return v
+				return firstNonEmpty(stableWindowID(v), v)
 			}
 		}
 		u := gjson.GetBytes(b, "metadata.user_id").String()
@@ -371,7 +393,21 @@ func sessionID(m map[string]any, bs ...[]byte) string {
 			}
 		}
 	}
+	if v := findString(m, "thread_id", "session_id"); v != "" {
+		return v
+	}
+	if v := findString(m, "execution_session_id", "derived_session_id"); v != "" {
+		return v
+	}
 	return "request:" + findString(m, "request_id")
+}
+
+func stableWindowID(v string) string {
+	v = strings.TrimSpace(v)
+	if i := strings.IndexByte(v, ':'); i > 0 {
+		return v[:i]
+	}
+	return v
 }
 func findString(v any, keys ...string) string {
 	wanted := map[string]bool{}
@@ -399,22 +435,57 @@ func findString(v any, keys ...string) string {
 	return walk(v)
 }
 func enrichDesktopMetadata(rec *Record, h http.Header) {
- rec.Client = firstNonEmpty(h.Get("Originator"), h.Get("User-Agent"))
- rec.ThreadID = firstNonEmpty(h.Get("Thread-Id"), h.Get("X-Thread-Id"))
- rec.WindowID = h.Get("X-Codex-Window-Id")
- raw := h.Get("X-Codex-Turn-Metadata")
- if raw == "" { return }
- var meta struct { SessionID string `json:"session_id"`; ThreadID string `json:"thread_id"`; TurnID string `json:"turn_id"`; WindowID string `json:"window_id"`; RequestKind string `json:"request_kind"`; Workspaces map[string]struct{ AssociatedRemoteURLs map[string]string `json:"associated_remote_urls"` } `json:"workspaces"` }
- if json.Unmarshal([]byte(raw), &meta) != nil { return }
- rec.ThreadID = firstNonEmpty(meta.ThreadID, rec.ThreadID); rec.TurnID=meta.TurnID; rec.WindowID=firstNonEmpty(meta.WindowID,rec.WindowID); rec.RequestKind=meta.RequestKind
- paths:=make([]string,0,len(meta.Workspaces));for p:=range meta.Workspaces{paths=append(paths,p)};sort.Strings(paths);if len(paths)>0{rec.ProjectPath=paths[0];rec.ProjectName=filepath.Base(strings.ReplaceAll(paths[0],"\\","/"));rem:=meta.Workspaces[paths[0]].AssociatedRemoteURLs;for _,k:=range []string{"origin","forgejo","github","llm"}{if rem[k]!=""{rec.GitRemote=rem[k];break}}}
+	rec.Client = firstNonEmpty(h.Get("Originator"), h.Get("User-Agent"))
+	rec.ThreadID = firstNonEmpty(h.Get("Thread-Id"), h.Get("X-Thread-Id"))
+	rec.WindowID = h.Get("X-Codex-Window-Id")
+	raw := h.Get("X-Codex-Turn-Metadata")
+	if raw == "" {
+		return
+	}
+	var meta struct {
+		SessionID   string `json:"session_id"`
+		ThreadID    string `json:"thread_id"`
+		TurnID      string `json:"turn_id"`
+		WindowID    string `json:"window_id"`
+		RequestKind string `json:"request_kind"`
+		Workspaces  map[string]struct {
+			AssociatedRemoteURLs map[string]string `json:"associated_remote_urls"`
+		} `json:"workspaces"`
+	}
+	if json.Unmarshal([]byte(raw), &meta) != nil {
+		return
+	}
+	rec.ThreadID = firstNonEmpty(meta.ThreadID, meta.SessionID, rec.ThreadID)
+	rec.TurnID = meta.TurnID
+	rec.WindowID = firstNonEmpty(meta.WindowID, rec.WindowID)
+	rec.RequestKind = meta.RequestKind
+	paths := make([]string, 0, len(meta.Workspaces))
+	for p := range meta.Workspaces {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+	if len(paths) > 0 {
+		rec.ProjectPath = paths[0]
+		rec.ProjectName = filepath.Base(strings.ReplaceAll(paths[0], "\\", "/"))
+		rem := meta.Workspaces[paths[0]].AssociatedRemoteURLs
+		for _, k := range []string{"origin", "forgejo", "github", "llm"} {
+			if rem[k] != "" {
+				rec.GitRemote = rem[k]
+				break
+			}
+		}
+	}
 }
 func extractConversationSummary(body []byte) string {
 	for _, path := range []string{"title", "conversation.title", "metadata.title", "client_metadata.title"} {
-		if value := compactSummary(gjson.GetBytes(body, path).String()); value != "" { return value }
+		if value := compactSummary(gjson.GetBytes(body, path).String()); value != "" {
+			return value
+		}
 	}
 	var root any
-	if json.Unmarshal(body, &root) != nil { return "" }
+	if json.Unmarshal(body, &root) != nil {
+		return ""
+	}
 	var candidates []string
 	var walk func(any, bool)
 	walk = func(value any, user bool) {
@@ -428,9 +499,13 @@ func extractConversationSummary(body []byte) string {
 				}
 			}
 			walk(item["input"], isUser || role == "")
-			for _, key := range []string{"messages", "content"} { walk(item[key], isUser) }
+			for _, key := range []string{"messages", "content"} {
+				walk(item[key], isUser)
+			}
 		case []any:
-			for _, child := range item { walk(child, user) }
+			for _, child := range item {
+				walk(child, user)
+			}
 		case string:
 			if user {
 				value := meaningfulSummary(item)
@@ -441,7 +516,9 @@ func extractConversationSummary(body []byte) string {
 		}
 	}
 	walk(root, false)
-	if len(candidates) == 0 { return "" }
+	if len(candidates) == 0 {
+		return ""
+	}
 	return candidates[len(candidates)-1]
 }
 func meaningfulSummary(value string) string {
@@ -451,30 +528,42 @@ func meaningfulSummary(value string) string {
 		matched := false
 		for _, tag := range []string{"environment_context", "environment_info", "workspace_info", "in-app-browser-context", "app-context"} {
 			open := "<" + tag
-			if !strings.HasPrefix(lower, open) { continue }
+			if !strings.HasPrefix(lower, open) {
+				continue
+			}
 			close := "</" + tag + ">"
 			end := strings.Index(lower, close)
-			if end < 0 { return "" }
+			if end < 0 {
+				return ""
+			}
 			value = strings.TrimSpace(value[end+len(close):])
 			matched = true
 			break
 		}
-		if !matched { break }
+		if !matched {
+			break
+		}
 	}
 	lower := strings.ToLower(value)
 	if strings.HasPrefix(lower, "# files mentioned by the user:") {
 		marker := "## my request for codex:"
 		if pos := strings.Index(lower, marker); pos >= 0 {
 			value = strings.TrimSpace(value[pos+len(marker):])
-		} else { return "" }
+		} else {
+			return ""
+		}
 	}
 	return compactSummary(value)
 }
 func compactSummary(value string) string {
 	value = strings.Join(strings.Fields(value), " ")
-	if value == "" { return "" }
+	if value == "" {
+		return ""
+	}
 	runes := []rune(value)
-	if len(runes) > 160 { return string(runes[:160]) + "…" }
+	if len(runes) > 160 {
+		return string(runes[:160]) + "…"
+	}
 	return value
 }
 func enrichGenericFacets(rec *Record, h http.Header, body []byte) {
@@ -561,7 +650,14 @@ func firstFacet(facets map[string][]string, name string) string {
 	}
 	return ""
 }
-func firstNonEmpty(v ...string) string { for _,s:=range v{if strings.TrimSpace(s)!=""{return s}};return "" }
+func firstNonEmpty(v ...string) string {
+	for _, s := range v {
+		if strings.TrimSpace(s) != "" {
+			return s
+		}
+	}
+	return ""
+}
 func sanitizeMeta(m map[string]any) map[string]any {
 	out := map[string]any{}
 	for _, k := range []string{"key_id", "requested_model", "target_provider", "target_model", "group", "execution_session_id", "derived_session_id", "caller_scope", "request_path", "selected_auth_id"} {

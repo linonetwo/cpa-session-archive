@@ -13,6 +13,10 @@ func TestManagementUIContainsBilingualFacetedExperience(t *testing.T) {
 		[]byte("分面筛选"),
 		[]byte("MutationObserver"),
 		[]byte("data-i18n"),
+		[]byte("#/sessions/"),
+		[]byte("metadata_only=true"),
+		[]byte("Export complete session"),
+		[]byte("Parameterized SQL"),
 	}
 	for _, check := range checks {
 		if !bytes.Contains(managementHTML, check) {

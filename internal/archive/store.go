@@ -133,13 +133,19 @@ func (s *Store) PutBatch(batch []Record) error {
 		if _, e = st.Exec(r.RequestID, r.TraceID, r.SessionID, r.KeyID, r.Summary, r.SourceFormat, r.RequestedModel, r.Model, r.Stream, r.Outcome, r.StatusCode, r.Error, r.StartedAt.Format(time.RFC3339Nano), r.CompletedAt.Format(time.RFC3339Nano), r.ParentResponseID, r.ResponseID, orig, up, resp, r.Truncated, string(m), facetsJSON(r.Facets)); e != nil {
 			return e
 		}
-		if _, e = tx.Exec(`DELETE FROM record_facets WHERE request_id=?`, r.RequestID); e != nil { return e }
+		if _, e = tx.Exec(`DELETE FROM record_facets WHERE request_id=?`, r.RequestID); e != nil {
+			return e
+		}
 		for name, values := range r.Facets {
 			for _, value := range values {
-				if _, e = tx.Exec(`INSERT OR IGNORE INTO record_facets(request_id,name,value) VALUES(?,?,?)`, r.RequestID, name, value); e != nil { return e }
+				if _, e = tx.Exec(`INSERT OR IGNORE INTO record_facets(request_id,name,value) VALUES(?,?,?)`, r.RequestID, name, value); e != nil {
+					return e
+				}
 			}
 		}
-		if e = indexSessionRecord(tx, r); e != nil { return e }
+		if e = indexSessionRecord(tx, r); e != nil {
+			return e
+		}
 	}
 	return tx.Commit()
 }
@@ -164,10 +170,30 @@ func (s *Store) LoadPayload(hash string) ([]byte, error) {
 	}
 	return ExpandPayload(m, s.loadBlob)
 }
-func facetsJSON(v map[string][]string) string { b,_:=json.Marshal(v);return string(b) }
+func facetsJSON(v map[string][]string) string { b, _ := json.Marshal(v); return string(b) }
 
-type FacetCount struct{Name string `json:"name"`;Value string `json:"value"`;Sessions int `json:"sessions"`}
-func (s *Store) Facets(ctx context.Context)([]FacetCount,error){rows,e:=s.DB.QueryContext(ctx,`SELECT name,value,COUNT(*) FROM session_facets GROUP BY name,value ORDER BY name,COUNT(*) DESC LIMIT 5000`);if e!=nil{return nil,e};defer rows.Close();out:=[]FacetCount{};for rows.Next(){var x FacetCount;if e=rows.Scan(&x.Name,&x.Value,&x.Sessions);e!=nil{return nil,e};out=append(out,x)};return out,rows.Err()}
+type FacetCount struct {
+	Name     string `json:"name"`
+	Value    string `json:"value"`
+	Sessions int    `json:"sessions"`
+}
+
+func (s *Store) Facets(ctx context.Context) ([]FacetCount, error) {
+	rows, e := s.DB.QueryContext(ctx, `SELECT name,value,COUNT(*) FROM session_facets GROUP BY name,value ORDER BY name,COUNT(*) DESC LIMIT 5000`)
+	if e != nil {
+		return nil, e
+	}
+	defer rows.Close()
+	out := []FacetCount{}
+	for rows.Next() {
+		var x FacetCount
+		if e = rows.Scan(&x.Name, &x.Value, &x.Sessions); e != nil {
+			return nil, e
+		}
+		out = append(out, x)
+	}
+	return out, rows.Err()
+}
 func (s *Store) Sessions(ctx context.Context, limit int) ([]SessionSummary, error) {
 	rows, e := s.DB.QueryContext(ctx, `SELECT session_id,requests,first_at,last_at,key_id,model,project,summary FROM session_summaries ORDER BY last_at DESC LIMIT ?`, limit)
 	if e != nil {
@@ -193,16 +219,22 @@ func (s *Store) SessionsFiltered(ctx context.Context, limit int, filters map[str
 		args = append(args, name, value)
 	}
 	q := `SELECT s.session_id,s.requests,s.first_at,s.last_at,s.key_id,s.model,s.project,s.summary FROM session_summaries s`
-	if len(where) > 0 { q += " WHERE " + strings.Join(where, " AND ") }
+	if len(where) > 0 {
+		q += " WHERE " + strings.Join(where, " AND ")
+	}
 	q += ` ORDER BY s.last_at DESC LIMIT ?`
 	args = append(args, limit)
 	rows, e := s.DB.QueryContext(ctx, q, args...)
-	if e != nil { return nil, e }
+	if e != nil {
+		return nil, e
+	}
 	defer rows.Close()
 	out := []SessionSummary{}
 	for rows.Next() {
 		var x SessionSummary
-		if e = rows.Scan(&x.SessionID, &x.Requests, &x.FirstAt, &x.LastAt, &x.KeyID, &x.Model, &x.Project, &x.Summary); e != nil { return nil, e }
+		if e = rows.Scan(&x.SessionID, &x.Requests, &x.FirstAt, &x.LastAt, &x.KeyID, &x.Model, &x.Project, &x.Summary); e != nil {
+			return nil, e
+		}
 		out = append(out, x)
 	}
 	return out, rows.Err()
@@ -210,9 +242,9 @@ func (s *Store) SessionsFiltered(ctx context.Context, limit int, filters map[str
 
 type SessionPage struct {
 	Records []Record `json:"records"`
-	Total int `json:"total"`
-	Limit int `json:"limit"`
-	Offset int `json:"offset"`
+	Total   int      `json:"total"`
+	Limit   int      `json:"limit"`
+	Offset  int      `json:"offset"`
 }
 
 func (s *Store) SessionMetadataRange(ctx context.Context, id string, limit, offset int, filters map[string]string) (SessionPage, error) {
@@ -224,17 +256,23 @@ func (s *Store) SessionMetadataRange(ctx context.Context, id string, limit, offs
 		args = append(args, name, value)
 	}
 	clause := strings.Join(where, " AND ")
-	if e := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM records WHERE `+clause, args...).Scan(&out.Total); e != nil { return out, e }
+	if e := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM records WHERE `+clause, args...).Scan(&out.Total); e != nil {
+		return out, e
+	}
 	queryArgs := append(append([]any{}, args...), limit, offset)
 	rows, e := s.DB.QueryContext(ctx, `SELECT request_id,trace_id,COALESCE(key_id,''),COALESCE(summary,''),COALESCE(source_format,''),COALESCE(requested_model,''),COALESCE(model,''),stream,COALESCE(outcome,''),status_code,COALESCE(error,''),started_at,completed_at,COALESCE(parent_response_id,''),COALESCE(response_id,''),truncated,COALESCE(metadata_json,''),COALESCE(facets_json,'') FROM records WHERE `+clause+` ORDER BY started_at LIMIT ? OFFSET ?`, queryArgs...)
-	if e != nil { return out, e }
+	if e != nil {
+		return out, e
+	}
 	defer rows.Close()
 	for rows.Next() {
 		var x Record
 		var stream, truncated int
 		var started, completed, metadata, facets string
 		x.SessionID = id
-		if e = rows.Scan(&x.RequestID, &x.TraceID, &x.KeyID, &x.Summary, &x.SourceFormat, &x.RequestedModel, &x.Model, &stream, &x.Outcome, &x.StatusCode, &x.Error, &started, &completed, &x.ParentResponseID, &x.ResponseID, &truncated, &metadata, &facets); e != nil { return out, e }
+		if e = rows.Scan(&x.RequestID, &x.TraceID, &x.KeyID, &x.Summary, &x.SourceFormat, &x.RequestedModel, &x.Model, &stream, &x.Outcome, &x.StatusCode, &x.Error, &started, &completed, &x.ParentResponseID, &x.ResponseID, &truncated, &metadata, &facets); e != nil {
+			return out, e
+		}
 		x.Stream = stream != 0
 		x.Truncated = truncated != 0
 		x.StartedAt, _ = time.Parse(time.RFC3339Nano, started)
@@ -248,9 +286,13 @@ func (s *Store) SessionMetadataRange(ctx context.Context, id string, limit, offs
 
 func (s *Store) SessionRange(ctx context.Context, id string, limit, offset, previewBytes int) (SessionPage, error) {
 	out := SessionPage{Records: []Record{}, Limit: limit, Offset: offset}
-	if e := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM records WHERE session_id=?`, id).Scan(&out.Total); e != nil { return out, e }
+	if e := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM records WHERE session_id=?`, id).Scan(&out.Total); e != nil {
+		return out, e
+	}
 	rows, e := s.DB.QueryContext(ctx, `SELECT request_id,trace_id,COALESCE(key_id,''),COALESCE(summary,''),COALESCE(source_format,''),COALESCE(requested_model,''),COALESCE(model,''),stream,COALESCE(outcome,''),status_code,COALESCE(error,''),started_at,completed_at,COALESCE(parent_response_id,''),COALESCE(response_id,''),COALESCE(original_ref,''),COALESCE(upstream_ref,''),COALESCE(response_ref,''),truncated,COALESCE(metadata_json,''),COALESCE(facets_json,''),original_request_gz,upstream_request_gz,response_gz FROM records WHERE session_id=? ORDER BY started_at LIMIT ? OFFSET ?`, id, limit, offset)
-	if e != nil { return out, e }
+	if e != nil {
+		return out, e
+	}
 	defer rows.Close()
 	for rows.Next() {
 		var x Record
@@ -258,16 +300,39 @@ func (s *Store) SessionRange(ctx context.Context, id string, limit, offset, prev
 		var started, done, meta, facets, or, ur, rr string
 		var oldO, oldU, oldR []byte
 		x.SessionID = id
-		if e = rows.Scan(&x.RequestID, &x.TraceID, &x.KeyID, &x.Summary, &x.SourceFormat, &x.RequestedModel, &x.Model, &stream, &x.Outcome, &x.StatusCode, &x.Error, &started, &done, &x.ParentResponseID, &x.ResponseID, &or, &ur, &rr, &trunc, &meta, &facets, &oldO, &oldU, &oldR); e != nil { return out, e }
-		x.Stream = stream != 0; x.Truncated = trunc != 0
-		x.StartedAt, _ = time.Parse(time.RFC3339Nano, started); x.CompletedAt, _ = time.Parse(time.RFC3339Nano, done)
-		if or != "" { x.OriginalRequest, _ = s.LoadPayload(or) } else { x.OriginalRequest = gunzipBytes(oldO) }
-		if ur != "" { x.UpstreamRequest, _ = s.LoadPayload(ur) } else if s.StoreUpstream { x.UpstreamRequest = gunzipBytes(oldU) }
-		if rr != "" { x.Response, _ = s.LoadPayload(rr) } else { x.Response = gunzipBytes(oldR) }
-		_ = json.Unmarshal([]byte(meta), &x.Metadata); _ = json.Unmarshal([]byte(facets), &x.Facets)
+		if e = rows.Scan(&x.RequestID, &x.TraceID, &x.KeyID, &x.Summary, &x.SourceFormat, &x.RequestedModel, &x.Model, &stream, &x.Outcome, &x.StatusCode, &x.Error, &started, &done, &x.ParentResponseID, &x.ResponseID, &or, &ur, &rr, &trunc, &meta, &facets, &oldO, &oldU, &oldR); e != nil {
+			return out, e
+		}
+		x.Stream = stream != 0
+		x.Truncated = trunc != 0
+		x.StartedAt, _ = time.Parse(time.RFC3339Nano, started)
+		x.CompletedAt, _ = time.Parse(time.RFC3339Nano, done)
+		if or != "" {
+			x.OriginalRequest, _ = s.LoadPayload(or)
+		} else {
+			x.OriginalRequest = gunzipBytes(oldO)
+		}
+		if ur != "" {
+			x.UpstreamRequest, _ = s.LoadPayload(ur)
+		} else if s.StoreUpstream {
+			x.UpstreamRequest = gunzipBytes(oldU)
+		}
+		if rr != "" {
+			x.Response, _ = s.LoadPayload(rr)
+		} else {
+			x.Response = gunzipBytes(oldR)
+		}
+		_ = json.Unmarshal([]byte(meta), &x.Metadata)
+		_ = json.Unmarshal([]byte(facets), &x.Facets)
 		if previewBytes > 0 {
-			if len(x.OriginalRequest) > previewBytes { x.OriginalRequest = x.OriginalRequest[:previewBytes]; x.Truncated = true }
-			if len(x.Response) > previewBytes { x.Response = x.Response[:previewBytes]; x.Truncated = true }
+			if len(x.OriginalRequest) > previewBytes {
+				x.OriginalRequest = x.OriginalRequest[:previewBytes]
+				x.Truncated = true
+			}
+			if len(x.Response) > previewBytes {
+				x.Response = x.Response[:previewBytes]
+				x.Truncated = true
+			}
 			x.UpstreamRequest = nil
 		}
 		out.Records = append(out.Records, x)
@@ -277,6 +342,117 @@ func (s *Store) SessionRange(ctx context.Context, id string, limit, offset, prev
 func (s *Store) Session(ctx context.Context, id string) ([]Record, error) {
 	page, e := s.SessionRange(ctx, id, 1000000, 0, 0)
 	return page.Records, e
+}
+
+func (s *Store) Request(ctx context.Context, id string) (Record, error) {
+	var x Record
+	var stream, trunc int
+	var started, done, meta, facets, or, ur, rr, sessionID string
+	var oldO, oldU, oldR []byte
+	err := s.DB.QueryRowContext(ctx, `SELECT session_id,request_id,trace_id,COALESCE(key_id,''),COALESCE(summary,''),COALESCE(source_format,''),COALESCE(requested_model,''),COALESCE(model,''),stream,COALESCE(outcome,''),status_code,COALESCE(error,''),started_at,completed_at,COALESCE(parent_response_id,''),COALESCE(response_id,''),COALESCE(original_ref,''),COALESCE(upstream_ref,''),COALESCE(response_ref,''),truncated,COALESCE(metadata_json,''),COALESCE(facets_json,''),original_request_gz,upstream_request_gz,response_gz FROM records WHERE request_id=? LIMIT 1`, id).Scan(&sessionID, &x.RequestID, &x.TraceID, &x.KeyID, &x.Summary, &x.SourceFormat, &x.RequestedModel, &x.Model, &stream, &x.Outcome, &x.StatusCode, &x.Error, &started, &done, &x.ParentResponseID, &x.ResponseID, &or, &ur, &rr, &trunc, &meta, &facets, &oldO, &oldU, &oldR)
+	if err != nil {
+		return x, err
+	}
+	x.SessionID = sessionID
+	x.Stream = stream != 0
+	x.Truncated = trunc != 0
+	x.StartedAt, _ = time.Parse(time.RFC3339Nano, started)
+	x.CompletedAt, _ = time.Parse(time.RFC3339Nano, done)
+	if or != "" {
+		x.OriginalRequest, err = s.LoadPayload(or)
+	} else {
+		x.OriginalRequest = gunzipBytes(oldO)
+	}
+	if err != nil {
+		return x, err
+	}
+	if ur != "" {
+		x.UpstreamRequest, err = s.LoadPayload(ur)
+	} else if s.StoreUpstream {
+		x.UpstreamRequest = gunzipBytes(oldU)
+	}
+	if err != nil {
+		return x, err
+	}
+	if rr != "" {
+		x.Response, err = s.LoadPayload(rr)
+	} else {
+		x.Response = gunzipBytes(oldR)
+	}
+	if err != nil {
+		return x, err
+	}
+	_ = json.Unmarshal([]byte(meta), &x.Metadata)
+	_ = json.Unmarshal([]byte(facets), &x.Facets)
+	return x, nil
+}
+
+type TrainingRecord struct {
+	SchemaVersion  int                 `json:"schema_version"`
+	SessionID      string              `json:"session_id"`
+	RequestID      string              `json:"request_id"`
+	StartedAt      time.Time           `json:"started_at"`
+	CompletedAt    time.Time           `json:"completed_at"`
+	KeyID          string              `json:"key_id,omitempty"`
+	RequestedModel string              `json:"requested_model,omitempty"`
+	Model          string              `json:"model,omitempty"`
+	Outcome        string              `json:"outcome,omitempty"`
+	StatusCode     int                 `json:"status_code,omitempty"`
+	Metadata       map[string]any      `json:"metadata,omitempty"`
+	Facets         map[string][]string `json:"facets,omitempty"`
+	Request        any                 `json:"request,omitempty"`
+	Response       any                 `json:"response,omitempty"`
+}
+
+// ExportSessionJSONL writes a complete session one record at a time. JSON
+// payloads remain structured objects instead of opaque/base64 strings.
+func (s *Store) ExportSessionJSONL(ctx context.Context, id string, dst io.Writer) error {
+	rows, err := s.DB.QueryContext(ctx, `SELECT request_id FROM records WHERE session_id=? ORDER BY started_at,id`, id)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var requestID string
+		if err = rows.Scan(&requestID); err != nil {
+			return err
+		}
+		ids = append(ids, requestID)
+	}
+	if err = rows.Err(); err != nil {
+		return err
+	}
+	enc := json.NewEncoder(dst)
+	enc.SetEscapeHTML(false)
+	for _, requestID := range ids {
+		if err = ctx.Err(); err != nil {
+			return err
+		}
+		r, loadErr := s.Request(ctx, requestID)
+		if loadErr != nil {
+			return loadErr
+		}
+		item := TrainingRecord{SchemaVersion: 1, SessionID: r.SessionID, RequestID: r.RequestID, StartedAt: r.StartedAt, CompletedAt: r.CompletedAt, KeyID: r.KeyID, RequestedModel: r.RequestedModel, Model: r.Model, Outcome: r.Outcome, StatusCode: r.StatusCode, Metadata: r.Metadata, Facets: r.Facets, Request: decodedPayload(r.OriginalRequest), Response: decodedPayload(r.Response)}
+		if err = enc.Encode(item); err != nil {
+			return err
+		}
+		if f, ok := dst.(interface{ Flush() }); ok {
+			f.Flush()
+		}
+	}
+	return nil
+}
+
+func decodedPayload(raw []byte) any {
+	if len(raw) == 0 {
+		return nil
+	}
+	var value any
+	if json.Unmarshal(raw, &value) == nil {
+		return value
+	}
+	return string(raw)
 }
 func (s *Store) Stats(ctx context.Context) (Stats, error) {
 	var x Stats

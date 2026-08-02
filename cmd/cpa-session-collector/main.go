@@ -29,6 +29,18 @@ func main() {
 		go st.MigrateLegacy()
 	}
 	go func() {
+		if env("ARCHIVE_REPAIR_CANONICAL_SESSIONS", "true") == "true" {
+			for {
+				if changed, err := st.RepairCanonicalSessions(context.Background()); err != nil {
+					log.Printf("canonical session repair will retry: %v", err)
+					time.Sleep(5 * time.Second)
+					continue
+				} else if changed > 0 {
+					log.Printf("canonical session repair merged %d request records", changed)
+				}
+				break
+			}
+		}
 		if env("ARCHIVE_BACKFILL_SESSION_INDEX", "true") == "true" {
 			for {
 				if err := st.BackfillSessionIndex(context.Background()); err != nil {
@@ -68,9 +80,10 @@ func main() {
 	http.HandleFunc("/v1/facets", s.facets)
 	http.HandleFunc("/v1/sessions", s.sessions)
 	http.HandleFunc("/v1/sessions/", s.session)
+	http.HandleFunc("/v1/requests/", s.request)
 	http.HandleFunc("/v1/maintenance/gc", s.gc)
 	addr := env("LISTEN_ADDR", ":8080")
-	log.Printf("archive collector v0.4.7 listening on %s, db=%s, store_upstream=%v", addr, dbPath, storeUpstream)
+	log.Printf("archive collector v0.5.0 listening on %s, db=%s, store_upstream=%v", addr, dbPath, storeUpstream)
 	log.Fatal(http.ListenAndServe(addr, nil))
 }
 func env(k, d string) string {
@@ -130,7 +143,9 @@ func (s *server) writer() {
 func (s *server) flush(batch []archive.Record) {
 	for attempt := 1; ; attempt++ {
 		e := s.s.PutBatch(batch)
-		if e == nil { return }
+		if e == nil {
+			return
+		}
 		message := strings.ToLower(e.Error())
 		if !strings.Contains(message, "database is locked") && !strings.Contains(message, "database is busy") {
 			log.Printf("archive batch dropped after non-retryable error: %v", e)
@@ -147,7 +162,13 @@ func (s *server) sessions(w http.ResponseWriter, r *http.Request) {
 	if v, e := strconv.Atoi(r.URL.Query().Get("limit")); e == nil && v > 0 && v <= 1000 {
 		limit = v
 	}
-	filters:=map[string]string{};for name,values:=range r.URL.Query(){if name=="limit"||len(values)==0{continue};filters[name]=values[0]}
+	filters := map[string]string{}
+	for name, values := range r.URL.Query() {
+		if name == "limit" || len(values) == 0 {
+			continue
+		}
+		filters[name] = values[0]
+	}
 	out, e := s.s.SessionsFiltered(r.Context(), limit, filters)
 	if e != nil {
 		http.Error(w, e.Error(), 500)
@@ -157,6 +178,20 @@ func (s *server) sessions(w http.ResponseWriter, r *http.Request) {
 }
 func (s *server) session(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimPrefix(r.URL.Path, "/v1/sessions/")
+	if strings.HasSuffix(id, "/export") {
+		id = strings.TrimSuffix(id, "/export")
+		if id == "" {
+			http.Error(w, "session required", 400)
+			return
+		}
+		w.Header().Set("Content-Type", "application/x-ndjson; charset=utf-8")
+		w.Header().Set("Content-Disposition", `attachment; filename="session-`+safeFilename(id)+`.jsonl"`)
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		if e := s.s.ExportSessionJSONL(r.Context(), id, w); e != nil {
+			log.Printf("session export failed id=%s: %v", id, e)
+		}
+		return
+	}
 	if id == "" {
 		http.Error(w, "session required", 400)
 		return
@@ -165,32 +200,87 @@ func (s *server) session(w http.ResponseWriter, r *http.Request) {
 		limit, offset := 20, 0
 		maxLimit := 100
 		metadataOnly := r.URL.Query().Get("metadata_only") == "true"
-		if metadataOnly { maxLimit = 1000 }
-		if v, e := strconv.Atoi(r.URL.Query().Get("limit")); e == nil && v > 0 && v <= maxLimit { limit = v }
-		if v, e := strconv.Atoi(r.URL.Query().Get("offset")); e == nil && v >= 0 { offset = v }
+		if metadataOnly {
+			maxLimit = 1000
+		}
+		if v, e := strconv.Atoi(r.URL.Query().Get("limit")); e == nil && v > 0 && v <= maxLimit {
+			limit = v
+		}
+		if v, e := strconv.Atoi(r.URL.Query().Get("offset")); e == nil && v >= 0 {
+			offset = v
+		}
 		if metadataOnly {
 			filters := map[string]string{}
 			for name, values := range r.URL.Query() {
-				if name == "limit" || name == "offset" || name == "metadata_only" || name == "preview_bytes" || len(values) == 0 { continue }
+				if name == "limit" || name == "offset" || name == "metadata_only" || name == "preview_bytes" || len(values) == 0 {
+					continue
+				}
 				filters[name] = values[0]
 			}
 			out, e := s.s.SessionMetadataRange(r.Context(), id, limit, offset, filters)
-			if e != nil { http.Error(w, e.Error(), 500); return }
+			if e != nil {
+				http.Error(w, e.Error(), 500)
+				return
+			}
 			writeJSON(w, out)
 			return
 		}
 		preview := 65536
-		if v, e := strconv.Atoi(r.URL.Query().Get("preview_bytes")); e == nil && v >= 1024 && v <= 1048576 { preview = v }
+		if v, e := strconv.Atoi(r.URL.Query().Get("preview_bytes")); e == nil && v >= 1024 && v <= 1048576 {
+			preview = v
+		}
 		out, e := s.s.SessionRange(r.Context(), id, limit, offset, preview)
-		if e != nil { http.Error(w, e.Error(), 500); return }
+		if e != nil {
+			http.Error(w, e.Error(), 500)
+			return
+		}
 		writeJSON(w, out)
 		return
 	}
 	out, e := s.s.Session(r.Context(), id)
-	if e != nil { http.Error(w, e.Error(), 500); return }
+	if e != nil {
+		http.Error(w, e.Error(), 500)
+		return
+	}
 	writeJSON(w, out)
 }
-func (s *server) facets(w http.ResponseWriter,r *http.Request){out,e:=s.s.Facets(r.Context());if e!=nil{http.Error(w,e.Error(),500);return};writeJSON(w,out)}
+func (s *server) request(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimPrefix(r.URL.Path, "/v1/requests/")
+	if id == "" {
+		http.Error(w, "request required", 400)
+		return
+	}
+	out, e := s.s.Request(r.Context(), id)
+	if e != nil {
+		if strings.Contains(strings.ToLower(e.Error()), "no rows") {
+			http.Error(w, "not found", 404)
+		} else {
+			http.Error(w, e.Error(), 500)
+		}
+		return
+	}
+	writeJSON(w, out)
+}
+func safeFilename(v string) string {
+	var b strings.Builder
+	for _, r := range v {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' {
+			b.WriteRune(r)
+		}
+	}
+	if b.Len() == 0 {
+		return "archive"
+	}
+	return b.String()
+}
+func (s *server) facets(w http.ResponseWriter, r *http.Request) {
+	out, e := s.s.Facets(r.Context())
+	if e != nil {
+		http.Error(w, e.Error(), 500)
+		return
+	}
+	writeJSON(w, out)
+}
 func (s *server) stats(w http.ResponseWriter, r *http.Request) {
 	out, e := s.s.Stats(r.Context())
 	if e != nil {
