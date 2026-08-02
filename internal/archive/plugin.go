@@ -148,7 +148,7 @@ func (p *Plugin) configure(raw []byte) ([]byte, error) {
 		p.wg.Add(1)
 		go p.sender()
 	}
-	reg := map[string]any{"schema_version": 2, "metadata": map[string]any{"Name": "cpa-session-archive", "Version": "0.5.1", "Author": "OneTwo", "GitHubRepository": "https://github.com/linonetwo/cpa-session-archive", "ConfigFields": []any{}}, "capabilities": map[string]any{"request_interceptor": true, "request_lifecycle_plugin": true, "response_interceptor": true, "response_stream_interceptor": true, "management_api": true}}
+	reg := map[string]any{"schema_version": 2, "metadata": map[string]any{"Name": "cpa-session-archive", "Version": "0.6.0", "Author": "OneTwo", "GitHubRepository": "https://github.com/linonetwo/cpa-session-archive", "ConfigFields": []any{}}, "capabilities": map[string]any{"request_interceptor": true, "request_lifecycle_plugin": true, "response_interceptor": true, "response_stream_interceptor": true, "management_api": true}}
 	return ok(reg)
 }
 func (p *Plugin) captureRequest(r intercept, afterAuth bool) {
@@ -248,11 +248,80 @@ func (p *Plugin) complete(r completion) {
 	if s.ResponseID == "" {
 		s.ResponseID = responseID(s.Response)
 	}
+	if s.ResponsePreview == "" {
+		s.ResponsePreview = extractResponsePreview(s.Response)
+	}
 	addCompletionFacets(&s.Record)
 	select {
 	case p.q <- s.Record:
 	default:
 	}
+}
+
+func extractResponsePreview(body []byte) string {
+	if terminal, ok := terminalSSEPayload(body); ok {
+		body = terminal
+	}
+	var root any
+	if json.Unmarshal(body, &root) != nil {
+		return ""
+	}
+	var candidates []string
+	var walk func(any)
+	walk = func(value any) {
+		switch item := value.(type) {
+		case []any:
+			for _, child := range item {
+				walk(child)
+			}
+		case map[string]any:
+			typeName := strings.ToLower(fmt.Sprint(item["type"]))
+			if typeName == "function_call" || typeName == "custom_tool_call" {
+				if name := strings.TrimSpace(fmt.Sprint(item["name"])); name != "" && name != "<nil>" {
+					candidates = append(candidates, "工具调用："+name)
+				}
+			}
+			if role := strings.ToLower(fmt.Sprint(item["role"])); role == "assistant" || strings.Contains(typeName, "output_text") {
+				for _, key := range []string{"text", "output_text", "content"} {
+					walkPreviewText(item[key], &candidates)
+				}
+			}
+			for _, key := range []string{"response", "output", "content"} {
+				walk(item[key])
+			}
+		}
+	}
+	walk(root)
+	if len(candidates) == 0 {
+		return ""
+	}
+	return compactPreview(candidates[len(candidates)-1], 240)
+}
+
+func walkPreviewText(value any, out *[]string) {
+	switch item := value.(type) {
+	case string:
+		if text := strings.TrimSpace(item); text != "" {
+			*out = append(*out, text)
+		}
+	case []any:
+		for _, child := range item {
+			walkPreviewText(child, out)
+		}
+	case map[string]any:
+		for _, key := range []string{"text", "output_text", "content"} {
+			walkPreviewText(item[key], out)
+		}
+	}
+}
+
+func compactPreview(value string, limit int) string {
+	value = strings.Join(strings.Fields(value), " ")
+	runes := []rune(value)
+	if len(runes) > limit {
+		return string(runes[:limit]) + "…"
+	}
+	return value
 }
 func addCompletionFacets(rec *Record) {
 	if rec.Facets == nil {

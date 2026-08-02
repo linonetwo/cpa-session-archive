@@ -71,13 +71,22 @@ Endpoints:
 - GET /v1/sessions/{session-id}
 - GET /v1/requests/{request-id}
 - GET /v1/sessions/{session-id}/export
-- GET /v1/export-tickets?session_id={session-id} (management proxy only)
+- GET /v1/export-tickets?scope=session|all&format=archive|sft&session_id={session-id} (management proxy only)
 - GET /archive-api/v1/exports/{one-time-ticket}
 - POST /v1/maintenance/gc
 
 ## Management UI and faceted search
 
-With CPA management API support enabled, CPA-Manager-Plus shows a session archive plugin page. The page provides storage statistics, dynamic facet selectors and three routed levels: session list, lightweight request index, and an on-demand full request/response/tool-result view. Loading states identify the parameterized SQL template without exposing filter values. Raw diagnostics and full long fields are materialized only after a click, so a large coding session does not freeze the page. Complete-session export first obtains a random, single-use, five-minute ticket through the authenticated management API, then streams newline-delimited JSON directly from the collector-only download path. Request and response payloads are structured JSON values rather than base64 strings; neither CPA's plugin ABI nor the browser buffers the entire export. Its maintainable embedded HTML/CSS/JavaScript source follows the host panel language and includes complete Simplified Chinese and English translations. The current CPA resource ABI exposes only one static host-menu label, so the registered sidebar label is Chinese (`会话归档`) while the embedded page itself switches languages dynamically.
+With CPA management API support enabled, CPA-Manager-Plus shows a session archive plugin page. The page provides storage statistics, dynamic facet selectors and routed session, request, tool-call, and raw-diagnostic views. The request index is paginated and includes lightweight user/assistant previews. Tool arguments and results are paired by call ID and have a dedicated detail route. Loading states identify the parameterized SQL template without exposing filter values. Raw diagnostics and full long fields are materialized only after a click, so a large coding session does not freeze the page.
+
+Session and whole-database downloads first obtain a random, single-use, five-minute ticket through the authenticated management API, then stream newline-delimited JSON directly from the collector-only download path with a server-controlled `.jsonl` filename. Two formats are deliberately separate:
+
+- `archive` is the lossless normalized record stream. Request and response payloads remain structured JSON values instead of Base64 fields.
+- `sft` emits one deduplicated conversational sample per durable session in the broadly compatible `{"messages": [...], "tools": [...]}` shape used by OpenAI SFT and Hugging Face TRL. Function calls and tool results are preserved; inline media is replaced by a media type plus SHA-256 reference rather than copied into the training file. Preference/DPO data is not fabricated because the archive has no chosen/rejected labels.
+
+Format references: [OpenAI supervised fine-tuning](https://developers.openai.com/api/docs/guides/supervised-fine-tuning) and [Hugging Face TRL dataset formats](https://huggingface.co/docs/trl/dataset_formats).
+
+Neither CPA's plugin ABI nor the browser buffers an export. The embedded HTML/CSS/JavaScript source follows the host panel language and includes complete Simplified Chinese and English translations. The current CPA resource ABI exposes only one static host-menu label, so the registered sidebar label is Chinese (`会话归档`) while the embedded page itself switches languages dynamically.
 
 Codex Desktop grouping uses the durable thread/session identity. Transient `execution_session_id` values remain searchable diagnostic facets but no longer split retries, remote executions, or compaction attempts into separate visible sessions. At startup, the collector repairs older projections transactionally; archived CAS payloads are not rewritten.
 

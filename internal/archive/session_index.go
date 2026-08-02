@@ -119,43 +119,78 @@ func (s *Store) BackfillSessionIndex(ctx context.Context) error {
 // payload-heavy records table. Failed and partial streams are retained.
 func (s *Store) NormalizeHistoricalSSE(ctx context.Context) error {
 	rows, err := s.DB.QueryContext(ctx, `SELECT i.request_id FROM session_indexed_requests i LEFT JOIN normalized_response_requests n ON n.request_id=i.request_id WHERE n.request_id IS NULL ORDER BY i.request_id`)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	var ids []string
 	for rows.Next() {
 		var id string
-		if err = rows.Scan(&id); err != nil { rows.Close(); return err }
+		if err = rows.Scan(&id); err != nil {
+			rows.Close()
+			return err
+		}
 		ids = append(ids, id)
 	}
-	if err = rows.Close(); err != nil { return err }
+	if err = rows.Close(); err != nil {
+		return err
+	}
 	changed := 0
 	for offset := 0; offset < len(ids); offset += 32 {
-		if err = ctx.Err(); err != nil { return err }
+		if err = ctx.Err(); err != nil {
+			return err
+		}
 		tx, beginErr := s.DB.BeginTx(ctx, nil)
-		if beginErr != nil { return beginErr }
+		if beginErr != nil {
+			return beginErr
+		}
 		end := offset + 32
-		if end > len(ids) { end = len(ids) }
+		if end > len(ids) {
+			end = len(ids)
+		}
 		for _, id := range ids[offset:end] {
 			var root string
-			if err = tx.QueryRowContext(ctx, `SELECT COALESCE(response_ref,'') FROM records WHERE request_id=?`, id).Scan(&root); err != nil { tx.Rollback(); return err }
+			if err = tx.QueryRowContext(ctx, `SELECT COALESCE(response_ref,'') FROM records WHERE request_id=?`, id).Scan(&root); err != nil {
+				tx.Rollback()
+				return err
+			}
 			if root != "" {
 				manifest, loadErr := loadBlobTx(tx, root)
-				if loadErr != nil { tx.Rollback(); return loadErr }
+				if loadErr != nil {
+					tx.Rollback()
+					return loadErr
+				}
 				var ref blobRef
 				if json.Unmarshal(manifest, &ref) == nil && ref.Encoding == "raw" && ref.Blob != "" {
 					raw, loadErr := loadBlobTx(tx, ref.Blob)
-					if loadErr != nil { tx.Rollback(); return loadErr }
+					if loadErr != nil {
+						tx.Rollback()
+						return loadErr
+					}
 					if terminal, ok := terminalSSEPayload(raw); ok {
 						newRoot, putErr := putPayload(tx, terminal)
-						if putErr != nil { tx.Rollback(); return putErr }
-						if _, putErr = tx.Exec(`UPDATE records SET response_ref=? WHERE request_id=? AND response_ref=?`, newRoot, id, root); putErr != nil { tx.Rollback(); return putErr }
+						if putErr != nil {
+							tx.Rollback()
+							return putErr
+						}
+						if _, putErr = tx.Exec(`UPDATE records SET response_ref=? WHERE request_id=? AND response_ref=?`, newRoot, id, root); putErr != nil {
+							tx.Rollback()
+							return putErr
+						}
 						changed++
 					}
 				}
 			}
-			if _, err = tx.Exec(`INSERT OR IGNORE INTO normalized_response_requests(request_id) VALUES(?)`, id); err != nil { tx.Rollback(); return err }
+			if _, err = tx.Exec(`INSERT OR IGNORE INTO normalized_response_requests(request_id) VALUES(?)`, id); err != nil {
+				tx.Rollback()
+				return err
+			}
 		}
-		if err = tx.Commit(); err != nil { return err }
-		if end%320 == 0 || end == len(ids) { log.Printf("historical SSE normalization: scanned=%d/%d rewritten=%d", end, len(ids), changed) }
+		if err = tx.Commit(); err != nil {
+			return err
+		}
+		if end%320 == 0 || end == len(ids) {
+			log.Printf("historical SSE normalization: scanned=%d/%d rewritten=%d", end, len(ids), changed)
+		}
 		time.Sleep(25 * time.Millisecond)
 	}
 	log.Printf("historical SSE normalization complete: %d/%d responses rewritten", changed, len(ids))
@@ -166,33 +201,117 @@ func (s *Store) NormalizeHistoricalSSE(ctx context.Context) error {
 // extractors with the last meaningful user message from the first request.
 func (s *Store) RepairSessionSummaries(ctx context.Context) error {
 	rows, err := s.DB.QueryContext(ctx, `SELECT s.session_id,COALESCE((SELECT original_ref FROM records r WHERE r.session_id=s.session_id ORDER BY r.started_at LIMIT 1),'') FROM session_summaries s WHERE s.summary='' OR lower(s.summary) LIKE '<environment_%' OR lower(s.summary) LIKE '<workspace_info>%' OR lower(s.summary) LIKE '<in-app-browser-context%' OR lower(s.summary) LIKE '<app-context>%' OR lower(s.summary) LIKE '# files mentioned by the user:%'`)
-	if err != nil { return err }
-	type candidate struct { sessionID, originalRef string }
+	if err != nil {
+		return err
+	}
+	type candidate struct{ sessionID, originalRef string }
 	var candidates []candidate
 	for rows.Next() {
 		var item candidate
-		if err = rows.Scan(&item.sessionID, &item.originalRef); err != nil { rows.Close(); return err }
+		if err = rows.Scan(&item.sessionID, &item.originalRef); err != nil {
+			rows.Close()
+			return err
+		}
 		candidates = append(candidates, item)
 	}
-	if err = rows.Close(); err != nil { return err }
+	if err = rows.Close(); err != nil {
+		return err
+	}
 	repaired := 0
 	for _, item := range candidates {
-		if item.originalRef == "" { continue }
+		if item.originalRef == "" {
+			continue
+		}
 		body, loadErr := s.LoadPayload(item.originalRef)
-		if loadErr != nil { return loadErr }
+		if loadErr != nil {
+			return loadErr
+		}
 		summary := extractConversationSummary(body)
-		if summary == "" { continue }
-		if _, err = s.DB.ExecContext(ctx, `UPDATE session_summaries SET summary=?,summary_at=first_at WHERE session_id=?`, summary, item.sessionID); err != nil { return err }
+		if summary == "" {
+			continue
+		}
+		if _, err = s.DB.ExecContext(ctx, `UPDATE session_summaries SET summary=?,summary_at=first_at WHERE session_id=?`, summary, item.sessionID); err != nil {
+			return err
+		}
 		repaired++
 	}
 	log.Printf("session summary repair complete: %d/%d updated", repaired, len(candidates))
 	return nil
 }
 
+// RepairRecordPreviews fills lightweight per-request previews once. The
+// marker table prevents non-conversational records from being re-expanded on
+// every restart.
+func (s *Store) RepairRecordPreviews(ctx context.Context) error {
+	rows, err := s.DB.QueryContext(ctx, `SELECT r.request_id,COALESCE(r.original_ref,''),COALESCE(r.response_ref,'') FROM records r LEFT JOIN previewed_requests p ON p.request_id=r.request_id WHERE p.request_id IS NULL ORDER BY r.id`)
+	if err != nil {
+		return err
+	}
+	type candidate struct{ requestID, originalRef, responseRef string }
+	var candidates []candidate
+	for rows.Next() {
+		var item candidate
+		if err = rows.Scan(&item.requestID, &item.originalRef, &item.responseRef); err != nil {
+			rows.Close()
+			return err
+		}
+		candidates = append(candidates, item)
+	}
+	if err = rows.Close(); err != nil {
+		return err
+	}
+	for offset := 0; offset < len(candidates); offset += 16 {
+		if err = ctx.Err(); err != nil {
+			return err
+		}
+		end := offset + 16
+		if end > len(candidates) {
+			end = len(candidates)
+		}
+		tx, beginErr := s.DB.BeginTx(ctx, nil)
+		if beginErr != nil {
+			return beginErr
+		}
+		for _, item := range candidates[offset:end] {
+			var summary, responsePreview string
+			if item.originalRef != "" {
+				if body, loadErr := s.LoadPayload(item.originalRef); loadErr == nil {
+					summary = extractConversationSummary(body)
+				}
+			}
+			if item.responseRef != "" {
+				if body, loadErr := s.LoadPayload(item.responseRef); loadErr == nil {
+					responsePreview = extractResponsePreview(body)
+				}
+			}
+			if _, err = tx.Exec(`UPDATE records SET summary=CASE WHEN COALESCE(summary,'')='' THEN ? ELSE summary END,response_preview=CASE WHEN COALESCE(response_preview,'')='' THEN ? ELSE response_preview END WHERE request_id=?`, summary, responsePreview, item.requestID); err != nil {
+				tx.Rollback()
+				return err
+			}
+			if _, err = tx.Exec(`INSERT OR IGNORE INTO previewed_requests(request_id) VALUES(?)`, item.requestID); err != nil {
+				tx.Rollback()
+				return err
+			}
+		}
+		if err = tx.Commit(); err != nil {
+			return err
+		}
+		if end%320 == 0 || end == len(candidates) {
+			log.Printf("request preview repair: %d/%d", end, len(candidates))
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return nil
+}
+
 func loadBlobTx(tx *sql.Tx, hash string) ([]byte, error) {
 	var data []byte
 	var codec string
-	if err := tx.QueryRow(`SELECT codec,data FROM blobs WHERE hash=?`, hash).Scan(&codec, &data); err != nil { return nil, err }
-	if codec == "gzip" { return gunzipBytes(data), nil }
+	if err := tx.QueryRow(`SELECT codec,data FROM blobs WHERE hash=?`, hash).Scan(&codec, &data); err != nil {
+		return nil, err
+	}
+	if codec == "gzip" {
+		return gunzipBytes(data), nil
+	}
 	return data, nil
 }

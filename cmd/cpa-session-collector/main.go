@@ -25,6 +25,9 @@ type server struct {
 
 type exportTicket struct {
 	SessionID string
+	Scope     string
+	Format    string
+	Filename  string
 	ExpiresAt time.Time
 }
 
@@ -71,6 +74,16 @@ func main() {
 				break
 			}
 		}
+		if env("ARCHIVE_REPAIR_RECORD_PREVIEWS", "true") == "true" {
+			for {
+				if err := st.RepairRecordPreviews(context.Background()); err != nil {
+					log.Printf("request preview repair will retry: %v", err)
+					time.Sleep(5 * time.Second)
+					continue
+				}
+				break
+			}
+		}
 		if env("ARCHIVE_NORMALIZE_SSE", "true") == "true" {
 			for {
 				if err := st.NormalizeHistoricalSSE(context.Background()); err != nil {
@@ -95,7 +108,7 @@ func main() {
 	http.HandleFunc("/archive-api/v1/exports/", s.ticketedExport)
 	http.HandleFunc("/v1/maintenance/gc", s.gc)
 	addr := env("LISTEN_ADDR", ":8080")
-	log.Printf("archive collector v0.5.1 listening on %s, db=%s, store_upstream=%v", addr, dbPath, storeUpstream)
+	log.Printf("archive collector v0.6.0 listening on %s, db=%s, store_upstream=%v", addr, dbPath, storeUpstream)
 	log.Fatal(http.ListenAndServe(addr, nil))
 }
 func env(k, d string) string {
@@ -279,14 +292,32 @@ func (s *server) exportTicket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sessionID := strings.TrimSpace(r.URL.Query().Get("session_id"))
-	if sessionID == "" {
+	scope := strings.TrimSpace(r.URL.Query().Get("scope"))
+	format := strings.TrimSpace(r.URL.Query().Get("format"))
+	if scope == "" {
+		scope = "session"
+	}
+	if format == "" {
+		format = "archive"
+	}
+	if scope != "session" && scope != "all" {
+		http.Error(w, "invalid scope", 400)
+		return
+	}
+	if format != "archive" && format != "sft" {
+		http.Error(w, "invalid format", 400)
+		return
+	}
+	if scope == "session" && sessionID == "" {
 		http.Error(w, "session required", 400)
 		return
 	}
-	var exists int
-	if err := s.s.DB.QueryRowContext(r.Context(), `SELECT 1 FROM records WHERE session_id=? LIMIT 1`, sessionID).Scan(&exists); err != nil {
-		http.Error(w, "session not found", 404)
-		return
+	if scope == "session" {
+		var exists int
+		if err := s.s.DB.QueryRowContext(r.Context(), `SELECT 1 FROM records WHERE session_id=? LIMIT 1`, sessionID).Scan(&exists); err != nil {
+			http.Error(w, "session not found", 404)
+			return
+		}
 	}
 	random := make([]byte, 32)
 	if _, err := rand.Read(random); err != nil {
@@ -301,9 +332,16 @@ func (s *server) exportTicket(w http.ResponseWriter, r *http.Request) {
 			delete(s.tickets, key)
 		}
 	}
-	s.tickets[token] = exportTicket{SessionID: sessionID, ExpiresAt: now.Add(5 * time.Minute)}
+	name := "cpa-"
+	if scope == "all" {
+		name += "all-sessions"
+	} else {
+		name += "session-" + safeFilename(sessionID)
+	}
+	name += "-" + format + ".jsonl"
+	s.tickets[token] = exportTicket{SessionID: sessionID, Scope: scope, Format: format, Filename: name, ExpiresAt: now.Add(5 * time.Minute)}
 	s.ticketMu.Unlock()
-	writeJSON(w, map[string]any{"url": "/archive-api/v1/exports/" + token, "expires_at": now.Add(5 * time.Minute)})
+	writeJSON(w, map[string]any{"url": "/archive-api/v1/exports/" + token, "filename": name, "content_type": "application/x-ndjson", "expires_at": now.Add(5 * time.Minute)})
 }
 func (s *server) ticketedExport(w http.ResponseWriter, r *http.Request) {
 	token := strings.TrimPrefix(r.URL.Path, "/archive-api/v1/exports/")
@@ -318,10 +356,16 @@ func (s *server) ticketedExport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/x-ndjson; charset=utf-8")
-	w.Header().Set("Content-Disposition", `attachment; filename="session-`+safeFilename(ticket.SessionID)+`.jsonl"`)
+	w.Header().Set("Content-Disposition", `attachment; filename="`+ticket.Filename+`"`)
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	if e := s.s.ExportSessionJSONL(r.Context(), ticket.SessionID, w); e != nil {
+	var e error
+	if ticket.Format == "sft" {
+		e = s.s.ExportTrainingJSONL(r.Context(), map[bool]string{true: ticket.SessionID, false: ""}[ticket.Scope == "session"], w)
+	} else {
+		e = s.s.ExportArchiveJSONL(r.Context(), map[bool]string{true: ticket.SessionID, false: ""}[ticket.Scope == "session"], w)
+	}
+	if e != nil {
 		log.Printf("ticketed session export failed id=%s: %v", ticket.SessionID, e)
 	}
 }

@@ -361,10 +361,20 @@
       .technical-meta dt { color: #667085; }
       .technical-meta dd { margin: 0; word-break: break-word; }
       .raw-diagnostics { margin-top: 8px; }
-      .load-more {
-        width: 100%;
-        margin: 14px 0;
-      }
+      .request-snippet { margin-top:8px; color:#344054; line-height:1.5; display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; }
+      .response-snippet { margin-top:6px; color:#08745b; line-height:1.5; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+      .pagination { display:flex; justify-content:center; align-items:center; gap:12px; margin:18px 0; }
+      .pagination button:disabled { cursor:not-allowed; opacity:.45; }
+      .export-controls { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+      .export-controls select { padding:8px; border:1px solid #ccd3dc; border-radius:6px; background:#fff; }
+      .diagnostic-grid,.tool-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:10px; margin:12px 0; }
+      .diagnostic-card,.tool-card { border:1px solid #d9e1ea; border-radius:10px; padding:12px; background:#fff; }
+      .diagnostic-card h3,.tool-card h3 { margin:0 0 6px; font-size:15px; }
+      .diagnostic-card p,.tool-card p { margin:5px 0; }
+      .diagnostic-card button,.tool-card button { margin-top:8px; color:#1769e0; border-color:#9fc0ed; }
+      .diagnostic-toolbar { display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; margin:12px 0; }
+      .diagnostic-content { max-height:calc(100vh - 260px); min-height:320px; }
+      .status-success { color:#08745b; } .status-error { color:#b42318; }
       .login input {
         width: 100%;
         box-sizing: border-box;
@@ -427,7 +437,7 @@
         <section class="panel sessions-panel">
           <div class="section-head">
             <h2 data-i18n="sessionsTitle"></h2>
-            <span id="resultCount" class="muted"></span>
+            <div class="export-controls"><span id="resultCount" class="muted"></span><select id="allExportFormat"><option value="archive" data-i18n="archiveFormat"></option><option value="sft" data-i18n="sftFormat"></option></select><button data-i18n="exportAll" onclick="downloadExport('all')"></button></div>
           </div>
           <div class="table-wrap">
             <table>
@@ -450,12 +460,12 @@
       <div class="route-shell">
         <div class="drawer-head">
           <button class="back-button" data-i18n="backToSessions" onclick="goSessions()"></button>
-          <button id="download" data-i18n="exportSession"></button>
+          <div class="export-controls"><select id="sessionExportFormat"><option value="archive" data-i18n="archiveFormat"></option><option value="sft" data-i18n="sftFormat"></option></select><button id="download" data-i18n="exportSession"></button></div>
         </div>
         <h2 id="detailTitle"></h2>
         <p id="detailMeta" class="muted"></p>
         <div id="detail"></div>
-        <button id="loadMore" class="load-more" data-i18n="loadMore" onclick="loadSessionPage()"></button>
+        <nav id="pagination" class="pagination"><button id="pagePrevious" data-i18n="previousPage" onclick="changeSessionPage(-1)"></button><strong id="pageInfo"></strong><button id="pageNext" data-i18n="nextPage" onclick="changeSessionPage(1)"></button></nav>
       </div>
     </div>
     <div id="requestView" class="route-page">
@@ -464,6 +474,7 @@
         <h2 id="requestTitle"></h2><p id="requestMeta" class="muted"></p><div id="requestDetail"></div>
       </div>
     </div>
+    <div id="subDetailView" class="route-page"><div class="route-shell"><div class="drawer-head"><button class="back-button" data-i18n="backToRequest" onclick="goRequest()"></button></div><h2 id="subDetailTitle"></h2><p id="subDetailMeta" class="muted"></p><div id="subDetail"></div></div></div>
     <div id="loading" class="loading-overlay" aria-live="polite">
       <div class="panel loading-box"><div class="spinner"></div><h3 id="loadingStage"></h3><div class="muted" data-i18n="executingQuery"></div><pre id="loadingSQL" class="loading-sql"></pre></div>
     </div>
@@ -502,13 +513,19 @@
           close: "关闭",
           backToSessions: "← 返回会话列表",
           backToSession: "← 返回当前会话",
-          exportSession: "导出完整 Session（JSONL）",
+          backToRequest: "← 返回本次请求",
+          exportSession: "下载当前 Session",
+          exportAll: "下载全库",
+          archiveFormat: "无损归档 JSONL",
+          sftFormat: "后训练 SFT JSONL",
           executingQuery: "正在执行的参数化 SQL（敏感值未展开）",
           loadingSessions: "正在查询会话列表…",
           loadingSession: "正在查询 Session 请求索引…",
           loadingRequest: "正在按需加载完整请求、响应和工具结果…",
           loadingExport: "正在申请一次性流式下载票据…",
-          loadMore: "加载更多",
+          previousPage: "上一页",
+          nextPage: "下一页",
+          pageInfo: "第 {page} / {pages} 页 · 共 {total} 条",
           sessionsTitle: "归档会话",
           untitled: "未命名会话",
           storageUsed: "实际存储占用",
@@ -550,6 +567,21 @@
           toolDefinitions: "工具定义 {count} 项",
           technicalMetadata: "技术元信息",
           rawDiagnostics: "原始请求/响应（排障）",
+          diagnosticsSubtitle: "原始载荷仅在进入此页面后加载，适合定位协议、路由和上游异常。",
+          viewRaw: "查看并复制",
+          originalRequest: "客户端原始请求",
+          upstreamRequest: "发送给上游的请求",
+          originalResponse: "上游原始响应",
+          bytes: "{count} 字节",
+          copy: "复制内容",
+          copied: "已复制",
+          toolCallsAndResults: "工具调用与结果",
+          toolInput: "调用参数",
+          toolOutput: "执行结果",
+          viewTool: "查看完整调用",
+          noToolOutput: "尚未在本次请求中找到对应结果；结果可能出现在下一次请求。",
+          userPreview: "用户请求",
+          assistantPreview: "助手响应",
           noReadableContent: "没有可直接阅读的文本内容",
           attachment: "多媒体附件",
           expandFull: "展开完整内容",
@@ -573,13 +605,19 @@
           close: "Close",
           backToSessions: "← Back to sessions",
           backToSession: "← Back to this session",
-          exportSession: "Export complete session (JSONL)",
+          backToRequest: "← Back to this request",
+          exportSession: "Download this session",
+          exportAll: "Download all sessions",
+          archiveFormat: "Lossless archive JSONL",
+          sftFormat: "Post-training SFT JSONL",
           executingQuery: "Parameterized SQL in progress (sensitive values omitted)",
           loadingSessions: "Querying session list…",
           loadingSession: "Querying the session request index…",
           loadingRequest: "Loading the full request, response and tool results on demand…",
           loadingExport: "Requesting a one-time streaming download ticket…",
-          loadMore: "Load more",
+          previousPage: "Previous",
+          nextPage: "Next",
+          pageInfo: "Page {page} / {pages} · {total} records",
           sessionsTitle: "Archived sessions",
           untitled: "Untitled session",
           storageUsed: "Storage used",
@@ -621,6 +659,21 @@
           toolDefinitions: "Tool definitions: {count}",
           technicalMetadata: "Technical metadata",
           rawDiagnostics: "Raw request/response (diagnostics)",
+          diagnosticsSubtitle: "Raw payloads load only after opening this route and help diagnose protocol, routing, and upstream failures.",
+          viewRaw: "View and copy",
+          originalRequest: "Original client request",
+          upstreamRequest: "Request sent upstream",
+          originalResponse: "Original upstream response",
+          bytes: "{count} bytes",
+          copy: "Copy content",
+          copied: "Copied",
+          toolCallsAndResults: "Tool calls and results",
+          toolInput: "Call arguments",
+          toolOutput: "Execution result",
+          viewTool: "View complete call",
+          noToolOutput: "No matching result was found in this request; it may appear in the next request.",
+          userPreview: "User request",
+          assistantPreview: "Assistant response",
           noReadableContent: "No directly readable text content",
           attachment: "Media attachment",
           expandFull: "Expand full content",
@@ -665,16 +718,19 @@
         keyAliases = {},
         sessionsByID = {},
         detailSessionID = "",
-        detailOffset = 0,
+        detailPage = 1,
+        detailPageSize = 20,
         detailTotal = 0,
-        detailRecords = [];
+        detailRecords = [],
+        currentRequestID = "",
+        currentRequestRecord = null;
       var detailSeenContent = new Set();
       var fullTexts = {}, fullTextSequence = 0, loadingCount = 0;
       var sqlTemplates = {
         sessions: "SELECT s.session_id, s.requests, s.first_at, s.last_at, s.key_id, s.model, s.project, s.summary\nFROM session_summaries s\nWHERE EXISTS (SELECT 1 FROM session_facets f WHERE f.session_id = s.session_id AND f.name = ? AND f.value = ?) …\nORDER BY s.last_at DESC LIMIT ?",
         session: "SELECT request_id, trace_id, key_id, summary, requested_model, model, outcome, status_code, started_at, completed_at, facets_json\nFROM records\nWHERE session_id = ?\nORDER BY started_at LIMIT ? OFFSET ?",
         request: "SELECT …, original_ref, upstream_ref, response_ref, metadata_json, facets_json\nFROM records\nWHERE request_id = ? LIMIT 1",
-        export: "SELECT request_id FROM records WHERE session_id = ? ORDER BY started_at, id\n-- CAS payloads are expanded and emitted incrementally as JSONL",
+        export: "SELECT request_id FROM records WHERE session_id = ? ORDER BY started_at, id\n-- CAS payloads are expanded and emitted incrementally as archive or SFT JSONL",
       };
       var facetOrder = [
         "project.name",
@@ -1138,7 +1194,7 @@
       async function showSession(id) {
         var selected = sessionsByID[id] || {};
         detailSessionID = id;
-        detailOffset = 0;
+        detailPage = 1;
         detailTotal = 0;
         detailRecords = [];
         detailSeenContent = new Set();
@@ -1153,27 +1209,26 @@
           .join(" · ");
         document.getElementById("listView").style.display = "none";
         document.getElementById("requestView").classList.remove("open");
+        document.getElementById("subDetailView").classList.remove("open");
         document.getElementById("drawer").classList.add("open");
         document.getElementById("download").onclick = function () {
-          downloadSession();
+          downloadExport("session");
         };
-        await loadSessionPage();
+        await loadSessionPage(1);
       }
-      async function loadSessionPage() {
-        var button = document.getElementById("loadMore");
-        button.disabled = true;
-        var baseOffset = detailOffset;
+      async function loadSessionPage(pageNumber) {
+        detailPage = Math.max(1, pageNumber || detailPage || 1);
+        var baseOffset = (detailPage - 1) * detailPageSize;
         var page = await api(
           "/sessions?id=" +
             encodeURIComponent(detailSessionID) +
-            "&limit=20&offset=" +
-            detailOffset +
+            "&limit=" + detailPageSize + "&offset=" +
+            baseOffset +
             "&metadata_only=true",
           t("loadingSession"), sqlTemplates.session,
         );
         detailTotal = page.total;
-        detailRecords = detailRecords.concat(page.records || []);
-        detailOffset = detailRecords.length;
+        detailRecords = page.records || [];
         if (detailRecords[0]) {
           var first = detailRecords[0];
           var selected = sessionsByID[detailSessionID] || {};
@@ -1186,52 +1241,62 @@
             selected.project ||
             t("untitled");
           document.getElementById("detailMeta").textContent =
-            detailRecords.length +
-            " / " +
-            detailTotal +
-            " · " +
-            keyName(first.key_id || selected.key_id) +
-            " · " +
+            keyName(first.key_id || selected.key_id) + " · " +
+            detailTotal + " " + t("records") + " · " +
             localTime(first.started_at);
         }
-        document.getElementById("detail").insertAdjacentHTML(
-          "beforeend",
+        document.getElementById("detail").innerHTML =
           (page.records || [])
             .map(function (record, index) {
               return renderRequestSummary(record, baseOffset + index + 1);
             })
-            .join(""),
-        );
-        button.style.display = detailOffset < detailTotal ? "block" : "none";
-        button.disabled = false;
+            .join("");
+        var pages = Math.max(1, Math.ceil(detailTotal / detailPageSize));
+        document.getElementById("pageInfo").textContent = t("pageInfo",{page:detailPage,pages:pages,total:detailTotal});
+        document.getElementById("pagePrevious").disabled = detailPage <= 1;
+        document.getElementById("pageNext").disabled = detailPage >= pages;
+        document.getElementById("pagination").style.display = detailTotal ? "flex" : "none";
         lastDetail = detailRecords;
+        window.scrollTo(0,0);
       }
+      function changeSessionPage(delta) { loadSessionPage(detailPage + delta); }
       function renderRequestSummary(record, number) {
         var title = record.summary || record.requested_model || record.model || t("request") + " #" + number;
         var tools = ((record.facets || {})["tool.name"] || []).slice(0, 4);
-        return '<article class="panel request-list-item" onclick="openRequest(\'' + esc(record.request_id) + '\')"><div><div class="conversation-title">#' + number + ' · ' + esc(title) + '</div><div class="conversation-meta">' + esc([record.requested_model || record.model, keyName(record.key_id), tools.length ? t("toolRole") + ': ' + tools.join(", ") : ""].filter(Boolean).join(" · ")) + '</div></div><div class="muted">' + esc(record.outcome + " · " + record.status_code + " · " + localTime(record.started_at)) + '</div></article>';
+        var responsePreview = record.response_preview || record.error || "";
+        return '<article class="panel request-list-item" onclick="openRequest(\'' + esc(record.request_id) + '\')"><div><div class="conversation-title">#' + number + ' · ' + esc(title) + '</div><div class="conversation-meta">' + esc([record.requested_model || record.model, keyName(record.key_id), tools.length ? t("toolRole") + ': ' + tools.join(", ") : ""].filter(Boolean).join(" · ")) + '</div><div class="request-snippet"><b>' + esc(t("userPreview")) + '：</b>' + esc(title) + '</div>' + (responsePreview ? '<div class="response-snippet"><b>' + esc(t("assistantPreview")) + '：</b>' + esc(responsePreview) + '</div>' : '') + '</div><div class="muted ' + (record.outcome === "succeeded" ? "status-success" : "status-error") + '">' + esc(record.outcome + " · " + record.status_code + " · " + localTime(record.started_at)) + '</div></article>';
       }
       function openRequest(id) { location.hash = "#/sessions/" + encodeURIComponent(detailSessionID) + "/requests/" + encodeURIComponent(id); }
       async function showRequest(sessionID, requestID) {
         detailSessionID = sessionID;
+        currentRequestID = requestID;
         document.getElementById("listView").style.display = "none";
         document.getElementById("drawer").classList.remove("open");
+        document.getElementById("subDetailView").classList.remove("open");
         document.getElementById("requestView").classList.add("open");
         document.getElementById("requestDetail").innerHTML = "";
         detailSeenContent = new Set(); fullTexts = {};
         var record = await api("/requests?id=" + encodeURIComponent(requestID), t("loadingRequest"), sqlTemplates.request);
+        currentRequestRecord = record;
         document.getElementById("requestTitle").textContent = record.summary || record.requested_model || record.model || t("request");
         document.getElementById("requestMeta").textContent = [keyName(record.key_id), record.requested_model || record.model, localTime(record.started_at)].filter(Boolean).join(" · ");
         document.getElementById("requestDetail").innerHTML = renderRecord(record, 1);
       }
-      async function downloadSession() {
+      async function downloadExport(scope) {
+        var format = document.getElementById(scope === "all" ? "allExportFormat" : "sessionExportFormat").value || "archive";
+        var popup = null;
+        try { popup = window.open("about:blank", "_blank"); } catch (e) {}
         showLoading(t("loadingExport"), sqlTemplates.export);
         try {
-          var response = await fetch(session.base + "/v0/management/plugins/cpa-session-archive/export?id=" + encodeURIComponent(detailSessionID), { headers: { Authorization: "Bearer " + session.key } });
-          if (!response.ok) throw Error(response.status);
-          var ticket = await response.json(), link = document.createElement("a");
-          link.href = new URL(ticket.url, location.origin).href; link.download = "session-" + detailSessionID + ".jsonl"; document.body.appendChild(link); link.click(); link.remove();
-        } finally { hideLoading(); }
+          var query = new URLSearchParams({scope:scope,format:format});
+          if (scope === "session") query.set("id",detailSessionID);
+          var response = await fetch(session.base + "/v0/management/plugins/cpa-session-archive/export?" + query, { headers: { Authorization: "Bearer " + session.key } });
+          if (!response.ok) throw Error("HTTP " + response.status + ": " + await response.text());
+          var ticket = await response.json(), url = new URL(ticket.url, session.base).href;
+          if (popup) popup.location.replace(url);
+          else { var link=document.createElement("a"); link.href=url; link.target="_blank"; link.rel="noopener"; document.body.appendChild(link); link.click(); link.remove(); }
+        } catch (error) { if (popup) popup.close(); alert(error.message || error); }
+        finally { hideLoading(); }
       }
       function renderRecord(record, number) {
         var request = decode64(record.original_request),
@@ -1262,7 +1327,7 @@
             ? ""
             : '<div class="context-summary">' + t("noReadableContent") + "</div>") +
           "</div>" +
-          metadata.details + rawDiagnostics(request, response) + "</article>"
+          metadata.details + renderToolOverview(record, requestObject, responseObject) + renderRawOverview(record, request, response) + "</article>"
         );
       }
       function retainFullText(text) { var id = "full-" + (++fullTextSequence); fullTexts[id] = text; return id; }
@@ -1270,13 +1335,53 @@
         var target = button.nextElementSibling;
         target.textContent = fullTexts[id] || ""; target.style.display = "block"; button.remove(); delete fullTexts[id];
       }
-      function rawDiagnostics(request, response) {
-        function part(label, text) {
-          var id = retainFullText(text);
-          return '<details><summary>' + esc(label) + ' (' + text.length + ')</summary><button onclick="expandFullText(\'' + id + '\',this)">' + esc(t("expandFull")) + '</button><pre class="full-content" style="display:none"></pre></details>';
-        }
-        return '<details class="raw-diagnostics"><summary>' + t("rawDiagnostics") + '</summary>' + part(t("request"), request) + part(t("response"), response) + '</details>';
+      function renderRawOverview(record, request, response) {
+        var upstream=decode64(record.upstream_request);
+        var parts=[{id:"request",label:t("originalRequest"),size:new Blob([request]).size},{id:"upstream",label:t("upstreamRequest"),size:new Blob([upstream]).size},{id:"response",label:t("originalResponse"),size:new Blob([response]).size}];
+        return '<section><h3>'+esc(t("rawDiagnostics"))+'</h3><p class="muted">'+esc(t("diagnosticsSubtitle"))+'</p><div class="diagnostic-grid">'+parts.map(function(part){return '<div class="diagnostic-card"><h3>'+esc(part.label)+'</h3><p class="muted">'+esc(t("bytes",{count:part.size}))+'</p><button onclick="openRaw(\''+part.id+'\')">'+esc(t("viewRaw"))+'</button></div>';}).join('')+'</div></section>';
       }
+      function renderToolOverview(record, requestObject, responseObject) {
+        var entries=extractToolEntries(requestObject,responseObject);
+        if(!entries.length) return "";
+        return '<section><h3>'+esc(t("toolCallsAndResults"))+'</h3><div class="tool-grid">'+entries.map(function(entry,index){var preview=entry.output||entry.arguments||""; return '<div class="tool-card"><h3>'+esc(entry.name||t("toolRole"))+'</h3><p class="muted">'+esc(entry.callID||"")+'</p><p class="request-snippet">'+esc(preview.slice(0,260))+(preview.length>260?'…':'')+'</p><button onclick="openTool('+index+')">'+esc(t("viewTool"))+'</button></div>';}).join('')+'</div></section>';
+      }
+      function extractToolEntries(requestObject,responseObject) {
+        var entries=[], byID={}, seen={};
+        function get(id,name){var key=id||('anonymous:'+name+':'+entries.length); if(byID[key]) return byID[key]; var item={callID:id||"",name:name||"",arguments:"",output:""}; byID[key]=item; entries.push(item); return item;}
+        function walk(value){
+          if(value==null) return;
+          if(Array.isArray(value)){value.forEach(walk);return;}
+          if(typeof value!=="object") return;
+          var type=String(value.type||"").toLowerCase(), id=String(value.call_id||value.tool_call_id||value.id||""), name=String(value.name||"");
+          if(type==="function_call"||type==="custom_tool_call"){var call=get(id,name); call.arguments=contentText(value.arguments||value.input||value.content);}
+          if(type==="function_call_output"||type==="custom_tool_call_output"){var result=get(id,name); result.output=contentText(value.output||value.content);}
+          if(Array.isArray(value.tool_calls)){value.tool_calls.forEach(function(raw){var fn=raw.function||{}; var call=get(String(raw.id||""),String(fn.name||raw.name||"")); call.arguments=contentText(fn.arguments||raw.arguments||"");});}
+          if(String(value.role||"").toLowerCase()==="tool"){var result=get(id,name); result.output=contentText(value.content||value.output);}
+          Object.keys(value).forEach(function(key){if(key!=="tools"&&key!=="tool_calls") walk(value[key]);});
+        }
+        walk(requestObject); walk(responseObject);
+        return entries.filter(function(entry){var key=[entry.callID,entry.name,entry.arguments,entry.output].join("\n"); if(seen[key]) return false; seen[key]=true; return entry.arguments||entry.output;});
+      }
+      function openRaw(part){location.hash="#/sessions/"+encodeURIComponent(detailSessionID)+"/requests/"+encodeURIComponent(currentRequestID)+"/raw/"+part;}
+      function openTool(index){location.hash="#/sessions/"+encodeURIComponent(detailSessionID)+"/requests/"+encodeURIComponent(currentRequestID)+"/tools/"+index;}
+      async function ensureRequestRecord(requestID){if(currentRequestRecord&&currentRequestRecord.request_id===requestID)return currentRequestRecord; currentRequestRecord=await api("/requests?id="+encodeURIComponent(requestID),t("loadingRequest"),sqlTemplates.request); currentRequestID=requestID; return currentRequestRecord;}
+      async function showRawDetail(sessionID,requestID,part){
+        detailSessionID=sessionID; currentRequestID=requestID; var record=await ensureRequestRecord(requestID), labels={request:t("originalRequest"),upstream:t("upstreamRequest"),response:t("originalResponse")};
+        var encoded=part==="request"?record.original_request:part==="upstream"?record.upstream_request:record.response, text=decode64(encoded), pretty=prettyPayload(text);
+        showSubDetail(); document.getElementById("subDetailTitle").textContent=labels[part]||t("rawDiagnostics"); document.getElementById("subDetailMeta").textContent=t("bytes",{count:new Blob([text]).size})+" · "+requestID;
+        var id=retainFullText(pretty); document.getElementById("subDetail").innerHTML='<div class="diagnostic-toolbar"><span class="muted">'+esc(t("diagnosticsSubtitle"))+'</span><button onclick="copyFullText(\''+id+'\',this)">'+esc(t("copy"))+'</button></div>'+lazyPre(pretty,id);
+      }
+      async function showToolDetail(sessionID,requestID,index){
+        detailSessionID=sessionID; currentRequestID=requestID; var record=await ensureRequestRecord(requestID), entries=extractToolEntries(parsePayload(decode64(record.original_request)),parsePayload(decode64(record.response))), entry=entries[Number(index)];
+        showSubDetail(); document.getElementById("subDetailTitle").textContent=(entry&&entry.name)||t("toolCallsAndResults"); document.getElementById("subDetailMeta").textContent=(entry&&entry.callID)||requestID;
+        if(!entry){document.getElementById("subDetail").innerHTML='<div class="empty">'+esc(t("noReadableContent"))+'</div>';return;}
+        var input=prettyPayload(entry.arguments),output=prettyPayload(entry.output),inputID=retainFullText(input),outputID=retainFullText(output); document.getElementById("subDetail").innerHTML='<div class="tool-grid"><section class="tool-card"><h3>'+esc(t("toolInput"))+'</h3>'+lazyPre(input,inputID)+'</section><section class="tool-card"><h3>'+esc(t("toolOutput"))+'</h3>'+(output?lazyPre(output,outputID):'<p class="muted">'+esc(t("noToolOutput"))+'</p>')+'</section></div>';
+      }
+      function showSubDetail(){document.getElementById("listView").style.display="none";document.getElementById("drawer").classList.remove("open");document.getElementById("requestView").classList.remove("open");document.getElementById("subDetailView").classList.add("open");window.scrollTo(0,0);}
+      function prettyPayload(text){if(!text)return "";try{return JSON.stringify(JSON.parse(text),null,2);}catch(e){return text;}}
+      function lazyPre(text,id){var limit=100000,preview=text.slice(0,limit);return '<pre class="diagnostic-content">'+esc(preview)+(text.length>limit?'\n…':'')+'</pre>'+(text.length>limit?'<button onclick="expandDiagnostic(\''+id+'\',this)">'+esc(t("expandFull"))+'</button>':'');}
+      function expandDiagnostic(id,button){var pre=button.previousElementSibling;pre.textContent=fullTexts[id]||"";button.remove();}
+      async function copyFullText(id,button){try{await navigator.clipboard.writeText(fullTexts[id]||"");button.textContent=t("copied");}catch(e){}}
       function parsePayload(text) {
         if (!text) return null;
         try { return JSON.parse(text); } catch (e) { return null; }
@@ -1398,14 +1503,18 @@
       }
       function goSessions() { location.hash = "#/sessions"; }
       function goSession() { location.hash = "#/sessions/" + encodeURIComponent(detailSessionID); }
+      function goRequest() { location.hash = "#/sessions/" + encodeURIComponent(detailSessionID) + "/requests/" + encodeURIComponent(currentRequestID); }
       function closeDrawer() { goSessions(); }
       async function route() {
         if (!session || document.getElementById("login").style.display !== "none") return;
         var path = (location.hash || "#/sessions").replace(/^#\/?/, "").split("/").filter(Boolean).map(decodeURIComponent);
         if (path[0] !== "sessions") { location.hash = "#/sessions"; return; }
+        document.getElementById("subDetailView").classList.remove("open");
+        if (path[1] && path[2] === "requests" && path[3] && path[4] === "raw" && path[5]) { await showRawDetail(path[1],path[3],path[5]); return; }
+        if (path[1] && path[2] === "requests" && path[3] && path[4] === "tools" && path[5] != null) { await showToolDetail(path[1],path[3],path[5]); return; }
         if (path[1] && path[2] === "requests" && path[3]) { await showRequest(path[1], path[3]); return; }
         if (path[1]) { await showSession(path[1]); return; }
-        document.getElementById("drawer").classList.remove("open"); document.getElementById("requestView").classList.remove("open"); document.getElementById("listView").style.display = "grid";
+        document.getElementById("drawer").classList.remove("open"); document.getElementById("requestView").classList.remove("open"); document.getElementById("subDetailView").classList.remove("open"); document.getElementById("listView").style.display = "grid";
       }
       function esc(x) {
         return String(x == null ? "" : x).replace(/[&<>"']/g, function (c) {

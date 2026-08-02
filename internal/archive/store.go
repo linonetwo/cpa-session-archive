@@ -46,11 +46,11 @@ func OpenStore(path string, storeUpstream bool) (*Store, error) {
 	if e != nil {
 		return nil, e
 	}
-	schema := `CREATE TABLE IF NOT EXISTS records(id INTEGER PRIMARY KEY,request_id TEXT NOT NULL UNIQUE,trace_id TEXT,session_id TEXT NOT NULL,key_id TEXT,source_format TEXT,requested_model TEXT,model TEXT,stream INTEGER,outcome TEXT,status_code INTEGER,error TEXT,started_at TEXT,completed_at TEXT,parent_response_id TEXT,response_id TEXT,original_request_gz BLOB,upstream_request_gz BLOB,response_gz BLOB,truncated INTEGER,metadata_json TEXT);CREATE TABLE IF NOT EXISTS record_facets(request_id TEXT NOT NULL,name TEXT NOT NULL,value TEXT NOT NULL,PRIMARY KEY(request_id,name,value));CREATE INDEX IF NOT EXISTS idx_facets_name_value ON record_facets(name,value);CREATE TABLE IF NOT EXISTS blobs(hash TEXT PRIMARY KEY,media_type TEXT,raw_size INTEGER NOT NULL,codec TEXT NOT NULL,data BLOB NOT NULL);CREATE INDEX IF NOT EXISTS idx_records_session_time ON records(session_id,started_at);CREATE INDEX IF NOT EXISTS idx_records_key_time ON records(key_id,started_at);CREATE INDEX IF NOT EXISTS idx_records_model_time ON records(requested_model,started_at);CREATE TABLE IF NOT EXISTS session_summaries(session_id TEXT PRIMARY KEY,requests INTEGER NOT NULL,first_at TEXT NOT NULL,last_at TEXT NOT NULL,key_id TEXT NOT NULL DEFAULT '',model TEXT NOT NULL DEFAULT '',project TEXT NOT NULL DEFAULT '',summary TEXT NOT NULL DEFAULT '',summary_at TEXT NOT NULL DEFAULT '');CREATE TABLE IF NOT EXISTS session_facets(session_id TEXT NOT NULL,name TEXT NOT NULL,value TEXT NOT NULL,PRIMARY KEY(session_id,name,value));CREATE INDEX IF NOT EXISTS idx_session_facets_name_value ON session_facets(name,value);CREATE TABLE IF NOT EXISTS session_indexed_requests(request_id TEXT PRIMARY KEY,session_id TEXT NOT NULL);CREATE TABLE IF NOT EXISTS normalized_response_requests(request_id TEXT PRIMARY KEY);`
+	schema := `CREATE TABLE IF NOT EXISTS records(id INTEGER PRIMARY KEY,request_id TEXT NOT NULL UNIQUE,trace_id TEXT,session_id TEXT NOT NULL,key_id TEXT,source_format TEXT,requested_model TEXT,model TEXT,stream INTEGER,outcome TEXT,status_code INTEGER,error TEXT,started_at TEXT,completed_at TEXT,parent_response_id TEXT,response_id TEXT,original_request_gz BLOB,upstream_request_gz BLOB,response_gz BLOB,truncated INTEGER,metadata_json TEXT);CREATE TABLE IF NOT EXISTS record_facets(request_id TEXT NOT NULL,name TEXT NOT NULL,value TEXT NOT NULL,PRIMARY KEY(request_id,name,value));CREATE INDEX IF NOT EXISTS idx_facets_name_value ON record_facets(name,value);CREATE TABLE IF NOT EXISTS blobs(hash TEXT PRIMARY KEY,media_type TEXT,raw_size INTEGER NOT NULL,codec TEXT NOT NULL,data BLOB NOT NULL);CREATE INDEX IF NOT EXISTS idx_records_session_time ON records(session_id,started_at);CREATE INDEX IF NOT EXISTS idx_records_key_time ON records(key_id,started_at);CREATE INDEX IF NOT EXISTS idx_records_model_time ON records(requested_model,started_at);CREATE TABLE IF NOT EXISTS session_summaries(session_id TEXT PRIMARY KEY,requests INTEGER NOT NULL,first_at TEXT NOT NULL,last_at TEXT NOT NULL,key_id TEXT NOT NULL DEFAULT '',model TEXT NOT NULL DEFAULT '',project TEXT NOT NULL DEFAULT '',summary TEXT NOT NULL DEFAULT '',summary_at TEXT NOT NULL DEFAULT '');CREATE TABLE IF NOT EXISTS session_facets(session_id TEXT NOT NULL,name TEXT NOT NULL,value TEXT NOT NULL,PRIMARY KEY(session_id,name,value));CREATE INDEX IF NOT EXISTS idx_session_facets_name_value ON session_facets(name,value);CREATE TABLE IF NOT EXISTS session_indexed_requests(request_id TEXT PRIMARY KEY,session_id TEXT NOT NULL);CREATE TABLE IF NOT EXISTS normalized_response_requests(request_id TEXT PRIMARY KEY);CREATE TABLE IF NOT EXISTS previewed_requests(request_id TEXT PRIMARY KEY);`
 	if _, e = db.Exec(schema); e != nil {
 		return nil, e
 	}
-	for _, q := range []string{"ALTER TABLE records ADD COLUMN original_ref TEXT", "ALTER TABLE records ADD COLUMN upstream_ref TEXT", "ALTER TABLE records ADD COLUMN response_ref TEXT", "ALTER TABLE records ADD COLUMN facets_json TEXT", "ALTER TABLE records ADD COLUMN summary TEXT"} {
+	for _, q := range []string{"ALTER TABLE records ADD COLUMN original_ref TEXT", "ALTER TABLE records ADD COLUMN upstream_ref TEXT", "ALTER TABLE records ADD COLUMN response_ref TEXT", "ALTER TABLE records ADD COLUMN facets_json TEXT", "ALTER TABLE records ADD COLUMN summary TEXT", "ALTER TABLE records ADD COLUMN response_preview TEXT"} {
 		_, _ = db.Exec(q)
 	}
 	s := &Store{DB: db, DBPath: path, StoreUpstream: storeUpstream}
@@ -108,7 +108,7 @@ func (s *Store) PutBatch(batch []Record) error {
 		return e
 	}
 	defer tx.Rollback()
-	st, e := tx.Prepare(`INSERT INTO records(request_id,trace_id,session_id,key_id,summary,source_format,requested_model,model,stream,outcome,status_code,error,started_at,completed_at,parent_response_id,response_id,original_ref,upstream_ref,response_ref,truncated,metadata_json,facets_json,original_request_gz,upstream_request_gz,response_gz) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,NULL,NULL) ON CONFLICT(request_id) DO UPDATE SET outcome=excluded.outcome,status_code=excluded.status_code,error=excluded.error,completed_at=excluded.completed_at,response_id=excluded.response_id,response_ref=excluded.response_ref,truncated=excluded.truncated,summary=CASE WHEN COALESCE(records.summary,'')='' THEN excluded.summary ELSE records.summary END`)
+	st, e := tx.Prepare(`INSERT INTO records(request_id,trace_id,session_id,key_id,summary,response_preview,source_format,requested_model,model,stream,outcome,status_code,error,started_at,completed_at,parent_response_id,response_id,original_ref,upstream_ref,response_ref,truncated,metadata_json,facets_json,original_request_gz,upstream_request_gz,response_gz) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,NULL,NULL) ON CONFLICT(request_id) DO UPDATE SET outcome=excluded.outcome,status_code=excluded.status_code,error=excluded.error,completed_at=excluded.completed_at,response_id=excluded.response_id,response_ref=excluded.response_ref,truncated=excluded.truncated,summary=CASE WHEN COALESCE(records.summary,'')='' THEN excluded.summary ELSE records.summary END,response_preview=CASE WHEN COALESCE(records.response_preview,'')='' THEN excluded.response_preview ELSE records.response_preview END`)
 	if e != nil {
 		return e
 	}
@@ -130,7 +130,7 @@ func (s *Store) PutBatch(batch []Record) error {
 			return e
 		}
 		m, _ := json.Marshal(r.Metadata)
-		if _, e = st.Exec(r.RequestID, r.TraceID, r.SessionID, r.KeyID, r.Summary, r.SourceFormat, r.RequestedModel, r.Model, r.Stream, r.Outcome, r.StatusCode, r.Error, r.StartedAt.Format(time.RFC3339Nano), r.CompletedAt.Format(time.RFC3339Nano), r.ParentResponseID, r.ResponseID, orig, up, resp, r.Truncated, string(m), facetsJSON(r.Facets)); e != nil {
+		if _, e = st.Exec(r.RequestID, r.TraceID, r.SessionID, r.KeyID, r.Summary, r.ResponsePreview, r.SourceFormat, r.RequestedModel, r.Model, r.Stream, r.Outcome, r.StatusCode, r.Error, r.StartedAt.Format(time.RFC3339Nano), r.CompletedAt.Format(time.RFC3339Nano), r.ParentResponseID, r.ResponseID, orig, up, resp, r.Truncated, string(m), facetsJSON(r.Facets)); e != nil {
 			return e
 		}
 		if _, e = tx.Exec(`DELETE FROM record_facets WHERE request_id=?`, r.RequestID); e != nil {
@@ -260,7 +260,7 @@ func (s *Store) SessionMetadataRange(ctx context.Context, id string, limit, offs
 		return out, e
 	}
 	queryArgs := append(append([]any{}, args...), limit, offset)
-	rows, e := s.DB.QueryContext(ctx, `SELECT request_id,trace_id,COALESCE(key_id,''),COALESCE(summary,''),COALESCE(source_format,''),COALESCE(requested_model,''),COALESCE(model,''),stream,COALESCE(outcome,''),status_code,COALESCE(error,''),started_at,completed_at,COALESCE(parent_response_id,''),COALESCE(response_id,''),truncated,COALESCE(metadata_json,''),COALESCE(facets_json,'') FROM records WHERE `+clause+` ORDER BY started_at LIMIT ? OFFSET ?`, queryArgs...)
+	rows, e := s.DB.QueryContext(ctx, `SELECT request_id,trace_id,COALESCE(key_id,''),COALESCE(summary,''),COALESCE(response_preview,''),COALESCE(source_format,''),COALESCE(requested_model,''),COALESCE(model,''),stream,COALESCE(outcome,''),status_code,COALESCE(error,''),started_at,completed_at,COALESCE(parent_response_id,''),COALESCE(response_id,''),truncated,COALESCE(metadata_json,''),COALESCE(facets_json,'') FROM records WHERE `+clause+` ORDER BY started_at LIMIT ? OFFSET ?`, queryArgs...)
 	if e != nil {
 		return out, e
 	}
@@ -270,7 +270,7 @@ func (s *Store) SessionMetadataRange(ctx context.Context, id string, limit, offs
 		var stream, truncated int
 		var started, completed, metadata, facets string
 		x.SessionID = id
-		if e = rows.Scan(&x.RequestID, &x.TraceID, &x.KeyID, &x.Summary, &x.SourceFormat, &x.RequestedModel, &x.Model, &stream, &x.Outcome, &x.StatusCode, &x.Error, &started, &completed, &x.ParentResponseID, &x.ResponseID, &truncated, &metadata, &facets); e != nil {
+		if e = rows.Scan(&x.RequestID, &x.TraceID, &x.KeyID, &x.Summary, &x.ResponsePreview, &x.SourceFormat, &x.RequestedModel, &x.Model, &stream, &x.Outcome, &x.StatusCode, &x.Error, &started, &completed, &x.ParentResponseID, &x.ResponseID, &truncated, &metadata, &facets); e != nil {
 			return out, e
 		}
 		x.Stream = stream != 0
@@ -289,7 +289,7 @@ func (s *Store) SessionRange(ctx context.Context, id string, limit, offset, prev
 	if e := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM records WHERE session_id=?`, id).Scan(&out.Total); e != nil {
 		return out, e
 	}
-	rows, e := s.DB.QueryContext(ctx, `SELECT request_id,trace_id,COALESCE(key_id,''),COALESCE(summary,''),COALESCE(source_format,''),COALESCE(requested_model,''),COALESCE(model,''),stream,COALESCE(outcome,''),status_code,COALESCE(error,''),started_at,completed_at,COALESCE(parent_response_id,''),COALESCE(response_id,''),COALESCE(original_ref,''),COALESCE(upstream_ref,''),COALESCE(response_ref,''),truncated,COALESCE(metadata_json,''),COALESCE(facets_json,''),original_request_gz,upstream_request_gz,response_gz FROM records WHERE session_id=? ORDER BY started_at LIMIT ? OFFSET ?`, id, limit, offset)
+	rows, e := s.DB.QueryContext(ctx, `SELECT request_id,trace_id,COALESCE(key_id,''),COALESCE(summary,''),COALESCE(response_preview,''),COALESCE(source_format,''),COALESCE(requested_model,''),COALESCE(model,''),stream,COALESCE(outcome,''),status_code,COALESCE(error,''),started_at,completed_at,COALESCE(parent_response_id,''),COALESCE(response_id,''),COALESCE(original_ref,''),COALESCE(upstream_ref,''),COALESCE(response_ref,''),truncated,COALESCE(metadata_json,''),COALESCE(facets_json,''),original_request_gz,upstream_request_gz,response_gz FROM records WHERE session_id=? ORDER BY started_at LIMIT ? OFFSET ?`, id, limit, offset)
 	if e != nil {
 		return out, e
 	}
@@ -300,7 +300,7 @@ func (s *Store) SessionRange(ctx context.Context, id string, limit, offset, prev
 		var started, done, meta, facets, or, ur, rr string
 		var oldO, oldU, oldR []byte
 		x.SessionID = id
-		if e = rows.Scan(&x.RequestID, &x.TraceID, &x.KeyID, &x.Summary, &x.SourceFormat, &x.RequestedModel, &x.Model, &stream, &x.Outcome, &x.StatusCode, &x.Error, &started, &done, &x.ParentResponseID, &x.ResponseID, &or, &ur, &rr, &trunc, &meta, &facets, &oldO, &oldU, &oldR); e != nil {
+		if e = rows.Scan(&x.RequestID, &x.TraceID, &x.KeyID, &x.Summary, &x.ResponsePreview, &x.SourceFormat, &x.RequestedModel, &x.Model, &stream, &x.Outcome, &x.StatusCode, &x.Error, &started, &done, &x.ParentResponseID, &x.ResponseID, &or, &ur, &rr, &trunc, &meta, &facets, &oldO, &oldU, &oldR); e != nil {
 			return out, e
 		}
 		x.Stream = stream != 0
@@ -349,7 +349,7 @@ func (s *Store) Request(ctx context.Context, id string) (Record, error) {
 	var stream, trunc int
 	var started, done, meta, facets, or, ur, rr, sessionID string
 	var oldO, oldU, oldR []byte
-	err := s.DB.QueryRowContext(ctx, `SELECT session_id,request_id,trace_id,COALESCE(key_id,''),COALESCE(summary,''),COALESCE(source_format,''),COALESCE(requested_model,''),COALESCE(model,''),stream,COALESCE(outcome,''),status_code,COALESCE(error,''),started_at,completed_at,COALESCE(parent_response_id,''),COALESCE(response_id,''),COALESCE(original_ref,''),COALESCE(upstream_ref,''),COALESCE(response_ref,''),truncated,COALESCE(metadata_json,''),COALESCE(facets_json,''),original_request_gz,upstream_request_gz,response_gz FROM records WHERE request_id=? LIMIT 1`, id).Scan(&sessionID, &x.RequestID, &x.TraceID, &x.KeyID, &x.Summary, &x.SourceFormat, &x.RequestedModel, &x.Model, &stream, &x.Outcome, &x.StatusCode, &x.Error, &started, &done, &x.ParentResponseID, &x.ResponseID, &or, &ur, &rr, &trunc, &meta, &facets, &oldO, &oldU, &oldR)
+	err := s.DB.QueryRowContext(ctx, `SELECT session_id,request_id,trace_id,COALESCE(key_id,''),COALESCE(summary,''),COALESCE(response_preview,''),COALESCE(source_format,''),COALESCE(requested_model,''),COALESCE(model,''),stream,COALESCE(outcome,''),status_code,COALESCE(error,''),started_at,completed_at,COALESCE(parent_response_id,''),COALESCE(response_id,''),COALESCE(original_ref,''),COALESCE(upstream_ref,''),COALESCE(response_ref,''),truncated,COALESCE(metadata_json,''),COALESCE(facets_json,''),original_request_gz,upstream_request_gz,response_gz FROM records WHERE request_id=? LIMIT 1`, id).Scan(&sessionID, &x.RequestID, &x.TraceID, &x.KeyID, &x.Summary, &x.ResponsePreview, &x.SourceFormat, &x.RequestedModel, &x.Model, &stream, &x.Outcome, &x.StatusCode, &x.Error, &started, &done, &x.ParentResponseID, &x.ResponseID, &or, &ur, &rr, &trunc, &meta, &facets, &oldO, &oldU, &oldR)
 	if err != nil {
 		return x, err
 	}
@@ -407,7 +407,19 @@ type TrainingRecord struct {
 // ExportSessionJSONL writes a complete session one record at a time. JSON
 // payloads remain structured objects instead of opaque/base64 strings.
 func (s *Store) ExportSessionJSONL(ctx context.Context, id string, dst io.Writer) error {
-	rows, err := s.DB.QueryContext(ctx, `SELECT request_id FROM records WHERE session_id=? ORDER BY started_at,id`, id)
+	return s.ExportArchiveJSONL(ctx, id, dst)
+}
+
+// ExportArchiveJSONL streams the lossless normalized archive. An empty id
+// exports the complete database in deterministic session/time order.
+func (s *Store) ExportArchiveJSONL(ctx context.Context, id string, dst io.Writer) error {
+	query := `SELECT request_id FROM records ORDER BY session_id,started_at,id`
+	args := []any{}
+	if id != "" {
+		query = `SELECT request_id FROM records WHERE session_id=? ORDER BY started_at,id`
+		args = append(args, id)
+	}
+	rows, err := s.DB.QueryContext(ctx, query, args...)
 	if err != nil {
 		return err
 	}

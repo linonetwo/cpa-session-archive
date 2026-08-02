@@ -64,6 +64,55 @@ func TestExportSessionJSONLIsCompleteAndStructured(t *testing.T) {
 	}
 }
 
+func TestTrainingExportProducesConversationalToolCallingJSONL(t *testing.T) {
+	store, err := OpenStore(filepath.Join(t.TempDir(), "archive.sqlite"), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.DB.Close()
+	now := time.Now()
+	request := []byte(`{"model":"gpt","input":[{"role":"user","content":[{"type":"input_text","text":"inspect the repo"}]},{"type":"function_call","call_id":"call-1","name":"shell","arguments":"{\"command\":\"rg TODO\"}"},{"type":"function_call_output","call_id":"call-1","output":"no matches"}],"tools":[{"type":"function","name":"shell","parameters":{"type":"object"}}]}`)
+	response := []byte(`{"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"The repository is clean."}]}]}`)
+	record := Record{RequestID: "training", SessionID: "session", Outcome: "succeeded", StatusCode: 200, StartedAt: now, CompletedAt: now, OriginalRequest: request, Response: response}
+	if err = store.PutBatch([]Record{record}); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err = store.ExportTrainingJSONL(context.Background(), "session", &out); err != nil {
+		t.Fatal(err)
+	}
+	var example SFTExample
+	if err = json.Unmarshal(bytes.TrimSpace(out.Bytes()), &example); err != nil {
+		t.Fatalf("invalid JSONL: %v\n%s", err, out.String())
+	}
+	if len(example.Messages) < 4 {
+		t.Fatalf("missing tool conversation: %#v", example.Messages)
+	}
+	if example.Tools == nil {
+		t.Fatal("tools schema missing")
+	}
+	if bytes.Contains(out.Bytes(), []byte("schema_version")) {
+		t.Fatal("archive metadata leaked into SFT example")
+	}
+}
+
+func TestTrainingExampleShapeWithoutStore(t *testing.T) {
+	request := []byte(`{"input":[{"role":"user","content":"inspect"},{"type":"function_call","call_id":"call-1","name":"shell","arguments":"{}"},{"type":"function_call_output","call_id":"call-1","output":"ok"}],"tools":[{"type":"function","name":"shell","parameters":{"type":"object"}}]}`)
+	response := []byte(`{"output":[{"type":"message","role":"assistant","content":"done"}]}`)
+	example, ok := trainingExample(Record{OriginalRequest: request, Response: response})
+	if !ok || len(example.Messages) != 4 {
+		t.Fatalf("example=%#v ok=%v", example, ok)
+	}
+	tools, ok := example.Tools.([]any)
+	if !ok || len(tools) != 1 {
+		t.Fatalf("tools=%#v", example.Tools)
+	}
+	wrapped := tools[0].(map[string]any)
+	if wrapped["function"] == nil {
+		t.Fatalf("OpenAI function wrapper missing: %#v", wrapped)
+	}
+}
+
 func TestRepairCanonicalSessionsMergesTransientExecutions(t *testing.T) {
 	store, err := OpenStore(filepath.Join(t.TempDir(), "archive.sqlite"), false)
 	if err != nil {
