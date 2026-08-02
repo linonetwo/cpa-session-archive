@@ -23,6 +23,8 @@ func TestManagementUIContainsBilingualFacetedExperience(t *testing.T) {
 		[]byte("#/sessions/"),
 		[]byte("/raw/"),
 		[]byte("/tools/"),
+		[]byte("/request-context?id="),
+		[]byte("extractToolEntriesFromValues"),
 	}
 	for _, check := range checks {
 		if !bytes.Contains(managementHTML, check) {

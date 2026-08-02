@@ -387,6 +387,49 @@ func (s *Store) Request(ctx context.Context, id string) (Record, error) {
 	return x, nil
 }
 
+// RequestContext returns the selected request and the following requests from
+// the same durable session. Responses API tool outputs are commonly submitted
+// in the next client request, so request-local inspection alone cannot pair a
+// function_call with its function_call_output.
+func (s *Store) RequestContext(ctx context.Context, id string, limit int) ([]Record, error) {
+	if limit < 1 {
+		limit = 8
+	}
+	if limit > 32 {
+		limit = 32
+	}
+	var sessionID string
+	var recordID int64
+	if err := s.DB.QueryRowContext(ctx, `SELECT session_id,id FROM records WHERE request_id=? LIMIT 1`, id).Scan(&sessionID, &recordID); err != nil {
+		return nil, err
+	}
+	rows, err := s.DB.QueryContext(ctx, `SELECT request_id FROM records WHERE session_id=? AND id>=? ORDER BY id LIMIT ?`, sessionID, recordID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ids := make([]string, 0, limit)
+	for rows.Next() {
+		var requestID string
+		if err = rows.Scan(&requestID); err != nil {
+			return nil, err
+		}
+		ids = append(ids, requestID)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	out := make([]Record, 0, len(ids))
+	for _, requestID := range ids {
+		record, loadErr := s.Request(ctx, requestID)
+		if loadErr != nil {
+			return nil, loadErr
+		}
+		out = append(out, record)
+	}
+	return out, nil
+}
+
 type TrainingRecord struct {
 	SchemaVersion  int                 `json:"schema_version"`
 	SessionID      string              `json:"session_id"`

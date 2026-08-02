@@ -104,11 +104,12 @@ func main() {
 	http.HandleFunc("/v1/sessions", s.sessions)
 	http.HandleFunc("/v1/sessions/", s.session)
 	http.HandleFunc("/v1/requests/", s.request)
+	http.HandleFunc("/v1/request-context", s.requestContext)
 	http.HandleFunc("/v1/export-tickets", s.exportTicket)
 	http.HandleFunc("/archive-api/v1/exports/", s.ticketedExport)
 	http.HandleFunc("/v1/maintenance/gc", s.gc)
 	addr := env("LISTEN_ADDR", ":8080")
-	log.Printf("archive collector v0.6.0 listening on %s, db=%s, store_upstream=%v", addr, dbPath, storeUpstream)
+	log.Printf("archive collector v0.6.1 listening on %s, db=%s, store_upstream=%v", addr, dbPath, storeUpstream)
 	log.Fatal(http.ListenAndServe(addr, nil))
 }
 func env(k, d string) string {
@@ -276,6 +277,27 @@ func (s *server) request(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out, e := s.s.Request(r.Context(), id)
+	if e != nil {
+		if strings.Contains(strings.ToLower(e.Error()), "no rows") {
+			http.Error(w, "not found", 404)
+		} else {
+			http.Error(w, e.Error(), 500)
+		}
+		return
+	}
+	writeJSON(w, out)
+}
+func (s *server) requestContext(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(r.URL.Query().Get("id"))
+	if id == "" {
+		http.Error(w, "request required", 400)
+		return
+	}
+	limit := 16
+	if v, e := strconv.Atoi(r.URL.Query().Get("limit")); e == nil && v > 0 && v <= 32 {
+		limit = v
+	}
+	out, e := s.s.RequestContext(r.Context(), id, limit)
 	if e != nil {
 		if strings.Contains(strings.ToLower(e.Error()), "no rows") {
 			http.Error(w, "not found", 404)

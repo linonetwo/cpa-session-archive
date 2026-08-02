@@ -1346,6 +1346,9 @@
         return '<section><h3>'+esc(t("toolCallsAndResults"))+'</h3><div class="tool-grid">'+entries.map(function(entry,index){var preview=entry.output||entry.arguments||""; return '<div class="tool-card"><h3>'+esc(entry.name||t("toolRole"))+'</h3><p class="muted">'+esc(entry.callID||"")+'</p><p class="request-snippet">'+esc(preview.slice(0,260))+(preview.length>260?'…':'')+'</p><button onclick="openTool('+index+')">'+esc(t("viewTool"))+'</button></div>';}).join('')+'</div></section>';
       }
       function extractToolEntries(requestObject,responseObject) {
+		return extractToolEntriesFromValues([requestObject,responseObject]);
+	  }
+      function extractToolEntriesFromValues(values) {
         var entries=[], byID={}, seen={};
         function get(id,name){var key=id||('anonymous:'+name+':'+entries.length); if(byID[key]) return byID[key]; var item={callID:id||"",name:name||"",arguments:"",output:""}; byID[key]=item; entries.push(item); return item;}
         function walk(value){
@@ -1359,7 +1362,7 @@
           if(String(value.role||"").toLowerCase()==="tool"){var result=get(id,name); result.output=contentText(value.content||value.output);}
           Object.keys(value).forEach(function(key){if(key!=="tools"&&key!=="tool_calls") walk(value[key]);});
         }
-        walk(requestObject); walk(responseObject);
+		(values||[]).forEach(walk);
         return entries.filter(function(entry){var key=[entry.callID,entry.name,entry.arguments,entry.output].join("\n"); if(seen[key]) return false; seen[key]=true; return entry.arguments||entry.output;});
       }
       function openRaw(part){location.hash="#/sessions/"+encodeURIComponent(detailSessionID)+"/requests/"+encodeURIComponent(currentRequestID)+"/raw/"+part;}
@@ -1372,7 +1375,14 @@
         var id=retainFullText(pretty); document.getElementById("subDetail").innerHTML='<div class="diagnostic-toolbar"><span class="muted">'+esc(t("diagnosticsSubtitle"))+'</span><button onclick="copyFullText(\''+id+'\',this)">'+esc(t("copy"))+'</button></div>'+lazyPre(pretty,id);
       }
       async function showToolDetail(sessionID,requestID,index){
-        detailSessionID=sessionID; currentRequestID=requestID; var record=await ensureRequestRecord(requestID), entries=extractToolEntries(parsePayload(decode64(record.original_request)),parsePayload(decode64(record.response))), entry=entries[Number(index)];
+		detailSessionID=sessionID; currentRequestID=requestID; var record=await ensureRequestRecord(requestID), entries=extractToolEntries(parsePayload(decode64(record.original_request)),parsePayload(decode64(record.response))), entry=entries[Number(index)];
+		if(entry && !entry.output && entry.callID){
+		  var contextRecords=await api("/request-context?id="+encodeURIComponent(requestID)+"&limit=16",t("loadingRequest"),sqlTemplates.request);
+		  var values=[];
+		  (contextRecords||[]).forEach(function(item){values.push(parsePayload(decode64(item.original_request)));values.push(parsePayload(decode64(item.response)));});
+		  var contextEntries=extractToolEntriesFromValues(values), matched=contextEntries.find(function(candidate){return candidate.callID===entry.callID;});
+		  if(matched) entry=matched;
+		}
         showSubDetail(); document.getElementById("subDetailTitle").textContent=(entry&&entry.name)||t("toolCallsAndResults"); document.getElementById("subDetailMeta").textContent=(entry&&entry.callID)||requestID;
         if(!entry){document.getElementById("subDetail").innerHTML='<div class="empty">'+esc(t("noReadableContent"))+'</div>';return;}
         var input=prettyPayload(entry.arguments),output=prettyPayload(entry.output),inputID=retainFullText(input),outputID=retainFullText(output); document.getElementById("subDetail").innerHTML='<div class="tool-grid"><section class="tool-card"><h3>'+esc(t("toolInput"))+'</h3>'+lazyPre(input,inputID)+'</section><section class="tool-card"><h3>'+esc(t("toolOutput"))+'</h3>'+(output?lazyPre(output,outputID):'<p class="muted">'+esc(t("noToolOutput"))+'</p>')+'</section></div>';

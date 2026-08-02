@@ -30,7 +30,7 @@ type managementResponse struct {
 
 func (p *Plugin) managementRegistration() map[string]any {
 	base := "/plugins/" + pluginID
-	return map[string]any{"Routes": []map[string]string{{"Method": "GET", "Path": base + "/stats"}, {"Method": "GET", "Path": base + "/facets"}, {"Method": "GET", "Path": base + "/sessions"}, {"Method": "GET", "Path": base + "/requests"}, {"Method": "GET", "Path": base + "/export"}}, "Resources": []map[string]string{{"Path": "/index.html", "Menu": "会话归档", "Description": "Browse archived projects, sessions and training data."}}}
+	return map[string]any{"Routes": []map[string]string{{"Method": "GET", "Path": base + "/stats"}, {"Method": "GET", "Path": base + "/facets"}, {"Method": "GET", "Path": base + "/sessions"}, {"Method": "GET", "Path": base + "/requests"}, {"Method": "GET", "Path": base + "/request-context"}, {"Method": "GET", "Path": base + "/export"}}, "Resources": []map[string]string{{"Path": "/index.html", "Menu": "会话归档", "Description": "Browse archived projects, sessions and training data."}}}
 }
 func (p *Plugin) handleManagement(raw []byte) ([]byte, error) {
 	var r managementRequest
@@ -66,6 +66,8 @@ func (p *Plugin) handleManagement(raw []byte) ([]byte, error) {
 	case r.Method == http.MethodGet && path == base+"/requests":
 		target = "/v1/requests/" + url.PathEscape(r.Query.Get("id"))
 		drop["id"] = true
+	case r.Method == http.MethodGet && path == base+"/request-context":
+		target = "/v1/request-context"
 	case r.Method == http.MethodGet && path == base+"/export":
 		target = "/v1/export-tickets"
 		if id := r.Query.Get("id"); id != "" {
