@@ -60,12 +60,12 @@ func TestExtractConversationSummaryFromStringInput(t *testing.T) {
 }
 
 func TestExtractConversationSummaryStripsAmbientBrowserContext(t *testing.T) {
-	body := []byte(`{"input":"<in-app-browser-context source=\"ambient-ui-state\">ignore this</in-app-browser-context>\\n\\nInvestigate the visible archive duplicates"}`)
+	body := []byte(`{"input":"<in-app-browser-context source=\"ambient-ui-state\">ignore this</in-app-browser-context>\n\nInvestigate the visible archive duplicates"}`)
 	if got := extractConversationSummary(body); got != "Investigate the visible archive duplicates" { t.Fatalf("summary=%q", got) }
 }
 
 func TestExtractConversationSummaryStripsFilePreamble(t *testing.T) {
-	body := []byte(`{"input":"# Files mentioned by the user:\\n\\n- screenshot.png\\n\\n## My request for Codex:\\n\\nExplain this failure"}`)
+	body := []byte(`{"input":"# Files mentioned by the user:\n\n- screenshot.png\n\n## My request for Codex:\n\nExplain this failure"}`)
 	if got := extractConversationSummary(body); got != "Explain this failure" { t.Fatalf("summary=%q", got) }
 }
 
