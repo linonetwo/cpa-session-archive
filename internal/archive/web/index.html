@@ -594,6 +594,7 @@
         facets = [],
         lastDetail = null,
         keyAliases = {},
+        sessionsByID = {},
         detailSessionID = "",
         detailOffset = 0,
         detailTotal = 0,
@@ -994,6 +995,9 @@
         });
         q.set("limit", document.getElementById("limit").value || 100);
         var rows = await api("/sessions?" + q);
+        rows.forEach(function (row) {
+          sessionsByID[row.session_id] = row;
+        });
         document.getElementById("resultCount").textContent = t("resultCount", {
           count: rows.length,
         });
@@ -1039,13 +1043,20 @@
         loadSessions();
       }
       async function openSession(id) {
+        var selected = sessionsByID[id] || {};
         detailSessionID = id;
         detailOffset = 0;
         detailTotal = 0;
         detailRecords = [];
         document.getElementById("detail").innerHTML = "";
-        document.getElementById("detailTitle").textContent = id;
-        document.getElementById("detailMeta").textContent = "";
+        document.getElementById("detailTitle").textContent =
+          selected.summary || selected.project || t("untitled");
+        document.getElementById("detailMeta").textContent = [
+          keyName(selected.key_id),
+          selected.last_at && localTime(selected.last_at),
+        ]
+          .filter(Boolean)
+          .join(" · ");
         document.getElementById("drawer").classList.add("open");
         document.getElementById("download").onclick = function () {
           var blob = new Blob([JSON.stringify(detailRecords, null, 2)], {
@@ -1075,18 +1086,21 @@
         detailOffset = detailRecords.length;
         if (detailRecords[0]) {
           var first = detailRecords[0];
+          var selected = sessionsByID[detailSessionID] || {};
           document.getElementById("detailTitle").textContent =
             first.summary ||
+            selected.summary ||
             (first.facets &&
               first.facets["project.name"] &&
               first.facets["project.name"][0]) ||
+            selected.project ||
             t("untitled");
           document.getElementById("detailMeta").textContent =
             detailRecords.length +
             " / " +
             detailTotal +
             " · " +
-            keyName(first.key_id) +
+            keyName(first.key_id || selected.key_id) +
             " · " +
             localTime(first.started_at);
         }
