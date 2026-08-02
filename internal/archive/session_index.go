@@ -295,6 +295,9 @@ func (s *Store) RepairRecordPreviews(ctx context.Context) error {
 			}
 			facets := map[string][]string{}
 			_ = json.Unmarshal([]byte(item.facets), &facets)
+			if facets == nil {
+				facets = map[string][]string{}
+			}
 			if threadSource != "" {
 				facets["thread.source"] = appendUnique(facets["thread.source"], threadSource)
 			}

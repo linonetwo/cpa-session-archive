@@ -173,7 +173,13 @@ func (s *Store) LoadPayload(hash string) ([]byte, error) {
 	}
 	return ExpandPayload(m, s.loadBlob)
 }
-func facetsJSON(v map[string][]string) string { b, _ := json.Marshal(v); return string(b) }
+func facetsJSON(v map[string][]string) string {
+	if v == nil {
+		return "{}"
+	}
+	b, _ := json.Marshal(v)
+	return string(b)
+}
 
 type FacetCount struct {
 	Name     string `json:"name"`
