@@ -1020,7 +1020,8 @@
           turnProcess: "中间过程",
           turnProcessHint:
             "逐项展开可查看模型的中间说明、压缩节点和工具调用摘要；工具完整参数与结果位于更深一层。",
-          turnSummary: "{requests} 个内部请求 · {tools} 类工具",
+          turnRequestCount: "{requests} 个内部请求",
+          turnToolCount: "{tools} 类工具",
           processStep: "过程 {number}",
           compactionMarker: "上下文压缩节点",
           toolSummary: "工具调用",
@@ -1154,7 +1155,8 @@
           turnProcess: "Intermediate process",
           turnProcessHint:
             "Expand a step to inspect intermediate explanations, compaction markers and tool summaries. Complete tool inputs and outputs remain one level deeper.",
-          turnSummary: "{requests} internal requests · {tools} tool types",
+          turnRequestCount: "{requests} internal requests",
+          turnToolCount: "{tools} tool types",
           processStep: "Step {number}",
           compactionMarker: "Context compaction point",
           toolSummary: "Tool call",
@@ -1856,6 +1858,11 @@
       function renderTurnSummary(turn, number) {
         var tools = turn.tool_names || [];
         var finalText = turn.final_text || t("noFinalAnswer");
+        var turnStats = t("turnRequestCount", {
+          requests: turn.requests || 0,
+        });
+        if (tools.length)
+          turnStats += " · " + t("turnToolCount", { tools: tools.length });
         return (
           '<article class="panel turn-card" onclick="openTurn(decodeURIComponent(\'' +
           encodeURIComponent(turn.turn_id) +
@@ -1871,10 +1878,7 @@
           number +
           " · " +
           esc(
-            t("turnSummary", {
-              requests: turn.requests || 0,
-              tools: tools.length,
-            }) +
+            turnStats +
               " · " +
               [keyName(turn.key_id), turn.model, localTime(turn.last_at)]
                 .filter(Boolean)

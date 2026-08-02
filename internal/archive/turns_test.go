@@ -66,3 +66,14 @@ func TestSessionTurnPageInfersKimiTurnsFromSummaryRuns(t *testing.T) {
 		t.Fatalf("turn id=%q", page.Turns[0].TurnID)
 	}
 }
+
+func TestCleanTurnTextRemovesClientWrappers(t *testing.T) {
+	for input, expected := range map[string]string{
+		"## My request for Codex:\nDo the work": "Do the work",
+		"&lt;userRequest&gt;Review this&lt;/userRequest&gt;": "Review this",
+	} {
+		if actual := cleanTurnText(input); actual != expected {
+			t.Fatalf("cleanTurnText(%q)=%q, want %q", input, actual, expected)
+		}
+	}
+}

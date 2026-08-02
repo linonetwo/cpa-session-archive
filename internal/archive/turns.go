@@ -210,7 +210,23 @@ func normalizeTurnSummary(value string) string {
 }
 
 func cleanTurnText(value string) string {
-	return strings.TrimSpace(html.UnescapeString(value))
+	value = strings.TrimSpace(html.UnescapeString(value))
+	lower := strings.ToLower(value)
+	for _, prefix := range []string{"## my request for codex:", "# my request for codex:", "my request for codex:"} {
+		if strings.HasPrefix(lower, prefix) {
+			value = strings.TrimSpace(value[len(prefix):])
+			lower = strings.ToLower(value)
+			break
+		}
+	}
+	if strings.HasPrefix(lower, "<userrequest>") {
+		value = strings.TrimSpace(value[len("<userRequest>"):])
+		lower = strings.ToLower(value)
+	}
+	if strings.HasSuffix(lower, "</userrequest>") {
+		value = strings.TrimSpace(value[:len(value)-len("</userRequest>")])
+	}
+	return value
 }
 
 func readableFinalPreview(value string) bool {
