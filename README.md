@@ -27,7 +27,10 @@ Exports transparently rehydrate the JSON structure, including repeated reference
 
     CPA native plugin -> bounded memory queue -> collector -> SQLite WAL + CAS blobs
 
-The request path never waits for disk I/O. A full queue, unavailable collector or storage error does not fail the model request.
+The request path never waits for disk I/O. A full queue or unavailable
+collector does not fail the model request and is retried with bounded
+backpressure. Accepted collector batches wait through transient SQLite locks
+instead of being silently discarded.
 
 ## Build
 

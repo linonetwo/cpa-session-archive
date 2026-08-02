@@ -60,7 +60,7 @@ func main() {
 	http.HandleFunc("/v1/sessions/", s.session)
 	http.HandleFunc("/v1/maintenance/gc", s.gc)
 	addr := env("LISTEN_ADDR", ":8080")
-	log.Printf("archive collector v0.4.4 listening on %s, db=%s, store_upstream=%v", addr, dbPath, storeUpstream)
+	log.Printf("archive collector v0.4.5 listening on %s, db=%s, store_upstream=%v", addr, dbPath, storeUpstream)
 	log.Fatal(http.ListenAndServe(addr, nil))
 }
 func env(k, d string) string {
@@ -118,8 +118,18 @@ func (s *server) writer() {
 	}
 }
 func (s *server) flush(batch []archive.Record) {
-	if e := s.s.PutBatch(batch); e != nil {
-		log.Printf("archive batch: %v", e)
+	for attempt := 1; ; attempt++ {
+		e := s.s.PutBatch(batch)
+		if e == nil { return }
+		message := strings.ToLower(e.Error())
+		if !strings.Contains(message, "database is locked") && !strings.Contains(message, "database is busy") {
+			log.Printf("archive batch dropped after non-retryable error: %v", e)
+			return
+		}
+		if attempt == 1 || attempt%10 == 0 {
+			log.Printf("archive batch waiting for SQLite lock: attempt=%d records=%d", attempt, len(batch))
+		}
+		time.Sleep(250 * time.Millisecond)
 	}
 }
 func (s *server) sessions(w http.ResponseWriter, r *http.Request) {
