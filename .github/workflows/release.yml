@@ -45,6 +45,11 @@ jobs:
           mkdir dist
           CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -buildvcs=false -tags cshared -buildmode=c-shared -o dist/cpa-session-archive-linux-amd64.so ./cmd/cpa-session-archive
           CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -buildvcs=false -o dist/cpa-session-collector-linux-amd64 ./cmd/cpa-session-collector
+          version="${GITHUB_REF_NAME#v}"
+          mkdir package
+          cp dist/cpa-session-archive-linux-amd64.so package/cpa-session-archive.so
+          (cd package && zip "../dist/cpa-session-archive_${version}_linux_amd64.zip" cpa-session-archive.so)
+          sha256sum "dist/cpa-session-archive_${version}_linux_amd64.zip" > dist/checksums.txt
           sha256sum dist/* > dist/SHA256SUMS
       - uses: softprops/action-gh-release@v2
         with:

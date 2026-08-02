@@ -1256,6 +1256,7 @@
         );
       }
       function facetValueLabel(name, value) {
+        if (name === "key.id" || name === "caller.scope") return keyName(value);
         var labels = {
           "request.kind": {
             turn: locale === "zh" ? "普通对话" : "Conversation turn",
@@ -1757,6 +1758,11 @@
         var duplicate =
           previous && previous.summary && previous.summary === record.summary;
         var retry = duplicate && record.outcome !== "succeeded";
+        var displayTitle = duplicate
+          ? retry
+            ? t("kindRetry")
+            : t("kindToolContinuation")
+          : title;
         var badge = retry
           ? '<span class="kind-badge retry">' + esc(t("kindRetry")) + "</span>"
           : duplicate
@@ -1772,7 +1778,7 @@
           "#" +
           number +
           " · " +
-          esc(title) +
+          esc(displayTitle) +
           '</div><div class="conversation-meta">' +
           esc(
             [
