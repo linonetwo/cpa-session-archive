@@ -148,7 +148,7 @@ func (p *Plugin) configure(raw []byte) ([]byte, error) {
 		p.wg.Add(1)
 		go p.sender()
 	}
-	reg := map[string]any{"schema_version": 2, "metadata": map[string]any{"Name": "cpa-session-archive", "Version": "0.4.5", "Author": "OneTwo", "GitHubRepository": "https://github.com/linonetwo/cpa-session-archive", "ConfigFields": []any{}}, "capabilities": map[string]any{"request_interceptor": true, "request_lifecycle_plugin": true, "response_interceptor": true, "response_stream_interceptor": true, "management_api": true}}
+	reg := map[string]any{"schema_version": 2, "metadata": map[string]any{"Name": "cpa-session-archive", "Version": "0.4.6", "Author": "OneTwo", "GitHubRepository": "https://github.com/linonetwo/cpa-session-archive", "ConfigFields": []any{}}, "capabilities": map[string]any{"request_interceptor": true, "request_lifecycle_plugin": true, "response_interceptor": true, "response_stream_interceptor": true, "management_api": true}}
 	return ok(reg)
 }
 func (p *Plugin) captureRequest(r intercept, afterAuth bool) {
@@ -415,28 +415,35 @@ func extractConversationSummary(body []byte) string {
 	}
 	var root any
 	if json.Unmarshal(body, &root) != nil { return "" }
-	var walk func(any, bool) string
-	walk = func(value any, user bool) string {
+	var candidates []string
+	var walk func(any, bool)
+	walk = func(value any, user bool) {
 		switch item := value.(type) {
 		case map[string]any:
 			role, _ := item["role"].(string)
 			isUser := user || strings.EqualFold(role, "user")
 			if isUser {
 				for _, key := range []string{"text", "prompt", "content", "input"} {
-					if found := walk(item[key], true); found != "" { return found }
+					walk(item[key], true)
 				}
 			}
-			for _, key := range []string{"input", "messages", "content"} {
-				if found := walk(item[key], isUser); found != "" { return found }
-			}
+			walk(item["input"], isUser || role == "")
+			for _, key := range []string{"messages", "content"} { walk(item[key], isUser) }
 		case []any:
-			for _, child := range item { if found := walk(child, user); found != "" { return found } }
+			for _, child := range item { walk(child, user) }
 		case string:
-			if user { return compactSummary(item) }
+			if user {
+				value := compactSummary(item)
+				lower := strings.ToLower(value)
+				if value != "" && !strings.HasPrefix(lower, "<environment_context>") && !strings.HasPrefix(lower, "<environment_info>") && !strings.HasPrefix(lower, "<workspace_info>") && !strings.HasPrefix(lower, "# files mentioned by the user:") {
+					candidates = append(candidates, value)
+				}
+			}
 		}
-		return ""
 	}
-	return walk(root, false)
+	walk(root, false)
+	if len(candidates) == 0 { return "" }
+	return candidates[len(candidates)-1]
 }
 func compactSummary(value string) string {
 	value = strings.Join(strings.Fields(value), " ")

@@ -73,7 +73,7 @@ Endpoints:
 
 ## Management UI and faceted search
 
-With CPA management API support enabled, CPA-Manager-Plus shows a **Session Archive** plugin page. The page provides storage statistics, dynamic facet selectors, a session table, request/response previews, and JSON export. Its maintainable embedded HTML/CSS/JavaScript source follows the host panel language and currently includes complete Simplified Chinese and English translations.
+With CPA management API support enabled, CPA-Manager-Plus shows a session archive plugin page. The page provides storage statistics, dynamic facet selectors, a session table, a role-based conversation timeline, and JSON export. Repeated request context is folded across turns; system instructions, tool schemas, technical facets and raw JSON remain available as secondary diagnostic details instead of overwhelming the primary reading view. Its maintainable embedded HTML/CSS/JavaScript source follows the host panel language and includes complete Simplified Chinese and English translations. The current CPA resource ABI exposes only one static host-menu label, so the registered sidebar label is Chinese (`会话归档`) while the embedded page itself switches languages dynamically.
 
 Facets are intentionally client-agnostic. The collector indexes metadata when present for:
 

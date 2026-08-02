@@ -162,6 +162,33 @@ func (s *Store) NormalizeHistoricalSSE(ctx context.Context) error {
 	return nil
 }
 
+// RepairSessionSummaries replaces transport boilerplate chosen by older
+// extractors with the last meaningful user message from the first request.
+func (s *Store) RepairSessionSummaries(ctx context.Context) error {
+	rows, err := s.DB.QueryContext(ctx, `SELECT s.session_id,COALESCE((SELECT original_ref FROM records r WHERE r.session_id=s.session_id ORDER BY r.started_at LIMIT 1),'') FROM session_summaries s WHERE s.summary='' OR lower(s.summary) LIKE '<environment_%' OR lower(s.summary) LIKE '# files mentioned by the user:%'`)
+	if err != nil { return err }
+	type candidate struct { sessionID, originalRef string }
+	var candidates []candidate
+	for rows.Next() {
+		var item candidate
+		if err = rows.Scan(&item.sessionID, &item.originalRef); err != nil { rows.Close(); return err }
+		candidates = append(candidates, item)
+	}
+	if err = rows.Close(); err != nil { return err }
+	repaired := 0
+	for _, item := range candidates {
+		if item.originalRef == "" { continue }
+		body, loadErr := s.LoadPayload(item.originalRef)
+		if loadErr != nil { return loadErr }
+		summary := extractConversationSummary(body)
+		if summary == "" { continue }
+		if _, err = s.DB.ExecContext(ctx, `UPDATE session_summaries SET summary=?,summary_at=first_at WHERE session_id=?`, summary, item.sessionID); err != nil { return err }
+		repaired++
+	}
+	log.Printf("session summary repair complete: %d/%d updated", repaired, len(candidates))
+	return nil
+}
+
 func loadBlobTx(tx *sql.Tx, hash string) ([]byte, error) {
 	var data []byte
 	var codec string

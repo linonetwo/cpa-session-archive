@@ -39,6 +39,16 @@ func main() {
 				break
 			}
 		}
+		if env("ARCHIVE_REPAIR_SESSION_SUMMARIES", "true") == "true" {
+			for {
+				if err := st.RepairSessionSummaries(context.Background()); err != nil {
+					log.Printf("session summary repair will retry: %v", err)
+					time.Sleep(5 * time.Second)
+					continue
+				}
+				break
+			}
+		}
 		if env("ARCHIVE_NORMALIZE_SSE", "true") == "true" {
 			for {
 				if err := st.NormalizeHistoricalSSE(context.Background()); err != nil {
@@ -60,7 +70,7 @@ func main() {
 	http.HandleFunc("/v1/sessions/", s.session)
 	http.HandleFunc("/v1/maintenance/gc", s.gc)
 	addr := env("LISTEN_ADDR", ":8080")
-	log.Printf("archive collector v0.4.5 listening on %s, db=%s, store_upstream=%v", addr, dbPath, storeUpstream)
+	log.Printf("archive collector v0.4.6 listening on %s, db=%s, store_upstream=%v", addr, dbPath, storeUpstream)
 	log.Fatal(http.ListenAndServe(addr, nil))
 }
 func env(k, d string) string {

@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>Session Archive</title>
+    <title>会话归档</title>
     <style>
       body {
         font: 14px system-ui;
@@ -336,6 +336,20 @@
         content-visibility: auto;
         contain-intrinsic-size: 600px;
       }
+      .conversation-stream { display: grid; gap: 10px; margin: 12px 0; }
+      .message-bubble { border: 1px solid #e1e7ee; border-radius: 10px; padding: 10px 12px; background: #f8fafc; }
+      .message-bubble.user { border-left: 4px solid #3b82f6; background: #eff6ff; }
+      .message-bubble.assistant { border-left: 4px solid #10b981; background: #ecfdf5; }
+      .message-bubble.tool { border-left: 4px solid #f59e0b; background: #fffbeb; }
+      .message-bubble.compaction { border-left: 4px solid #8b5cf6; background: #f5f3ff; }
+      .message-role { font-size: 12px; font-weight: 700; color: #475467; margin-bottom: 6px; }
+      .message-text { white-space: pre-wrap; word-break: break-word; line-height: 1.55; }
+      .context-summary { color: #667085; background: #f2f4f7; border-radius: 8px; padding: 8px 10px; margin: 8px 0; }
+      .technical-meta { margin: 8px 0; }
+      .technical-meta dl { display: grid; grid-template-columns: minmax(130px, 220px) 1fr; gap: 5px 12px; }
+      .technical-meta dt { color: #667085; }
+      .technical-meta dd { margin: 0; word-break: break-word; }
+      .raw-diagnostics { margin-top: 8px; }
       .load-more {
         width: 100%;
         margin: 14px 0;
@@ -395,7 +409,7 @@
       </aside>
       <main class="content">
         <header>
-          <h1 data-i18n="title">Session Archive</h1>
+          <h1 data-i18n="title">会话归档</h1>
           <p class="muted" data-i18n="subtitle"></p>
         </header>
         <div id="cards" class="cards"></div>
@@ -454,7 +468,7 @@
     <script>
       var messages = {
         zh: {
-          title: "Session Archive",
+          title: "会话归档",
           subtitle:
             "按项目、代码库、客户端工具、会话、模型、工具调用、认证与结果等元信息组合筛选。",
           facetedFilter: "分面筛选",
@@ -503,6 +517,18 @@
           groupContent: "工具与内容",
           groupAuth: "认证与结果",
           groupOther: "其他元信息",
+          userRole: "用户",
+          assistantRole: "助手",
+          toolRole: "工具",
+          compactionRole: "上下文压缩",
+          contextFolded: "已折叠 {count} 项重复上下文",
+          systemContext: "系统指令 {chars} 字符",
+          toolDefinitions: "工具定义 {count} 项",
+          technicalMetadata: "技术元信息",
+          rawDiagnostics: "原始请求/响应（排障）",
+          noReadableContent: "没有可直接阅读的文本内容",
+          attachment: "多媒体附件",
+          expandFull: "展开完整内容",
         },
         en: {
           title: "Session Archive",
@@ -555,6 +581,18 @@
           groupContent: "Tools and content",
           groupAuth: "Authentication and outcomes",
           groupOther: "Other metadata",
+          userRole: "User",
+          assistantRole: "Assistant",
+          toolRole: "Tool",
+          compactionRole: "Context compaction",
+          contextFolded: "{count} repeated context items folded",
+          systemContext: "System instructions: {chars} characters",
+          toolDefinitions: "Tool definitions: {count}",
+          technicalMetadata: "Technical metadata",
+          rawDiagnostics: "Raw request/response (diagnostics)",
+          noReadableContent: "No directly readable text content",
+          attachment: "Media attachment",
+          expandFull: "Expand full content",
         },
       };
       var locale = /^zh/i.test(
@@ -599,6 +637,7 @@
         detailOffset = 0,
         detailTotal = 0,
         detailRecords = [];
+      var detailSeenContent = new Set();
       var facetOrder = [
         "project.name",
         "workspace.name",
@@ -1048,6 +1087,7 @@
         detailOffset = 0;
         detailTotal = 0;
         detailRecords = [];
+        detailSeenContent = new Set();
         document.getElementById("detail").innerHTML = "";
         document.getElementById("detailTitle").textContent =
           selected.summary || selected.project || t("untitled");
@@ -1088,8 +1128,8 @@
           var first = detailRecords[0];
           var selected = sessionsByID[detailSessionID] || {};
           document.getElementById("detailTitle").textContent =
-            first.summary ||
             selected.summary ||
+            first.summary ||
             (first.facets &&
               first.facets["project.name"] &&
               first.facets["project.name"][0]) ||
@@ -1118,7 +1158,12 @@
       }
       function renderRecord(record, number) {
         var request = decode64(record.original_request),
-          response = decode64(record.response);
+          response = decode64(record.response),
+          requestObject = parsePayload(request),
+          responseObject = parsePayload(response),
+          requestView = readableRequest(requestObject),
+          responseView = readableResponse(responseObject, response),
+          metadata = readableMetadata(record);
         return (
           '<article class="panel request-card request-preview"><div class="request-head"><b>#' +
           number +
@@ -1130,37 +1175,133 @@
           record.status_code +
           " · " +
           esc(localTime(record.started_at)) +
-          '</span></div><div class="facet-badges">' +
-          Object.keys(record.facets || {})
-            .sort()
-            .map(function (key) {
-              return (record.facets[key] || [])
-                .map(function (value) {
-                  return (
-                    "<span>" +
-                    esc(facetLabel(key)) +
-                    ": " +
-                    esc(facetValueLabel(key, value)) +
-                    "</span>"
-                  );
-                })
-                .join("");
-            })
-            .join("") +
-          "</div><details><summary>" +
-          t("request") +
-          " (" +
-          request.length +
-          ")</summary><pre>" +
+          '</span></div>' +
+          metadata.primary +
+          requestView.context +
+          '<div class="conversation-stream">' +
+          requestView.html +
+          responseView +
+          (requestView.html || responseView
+            ? ""
+            : '<div class="context-summary">' + t("noReadableContent") + "</div>") +
+          "</div>" +
+          metadata.details +
+          '<details class="raw-diagnostics"><summary>' +
+          t("rawDiagnostics") +
+          "</summary><details><summary>" +
+          t("request") + " (" + request.length + ")</summary><pre>" +
           esc(request.slice(0, 12000)) +
           "</pre></details><details><summary>" +
-          t("response") +
-          " (" +
-          response.length +
-          ")</summary><pre>" +
+          t("response") + " (" + response.length + ")</summary><pre>" +
           esc(response.slice(0, 12000)) +
-          "</pre></details></article>"
+          "</pre></details></details></article>"
         );
+      }
+      function parsePayload(text) {
+        if (!text) return null;
+        try { return JSON.parse(text); } catch (e) { return null; }
+      }
+      function readableRequest(root) {
+        if (!root || typeof root !== "object") return { html: "", context: "" };
+        var entries = [], hidden = 0, context = [];
+        collectSemantic(root.input || root.messages || [], "user", entries);
+        if (typeof root.instructions === "string" && root.instructions.length)
+          context.push(t("systemContext", { chars: root.instructions.length }));
+        if (Array.isArray(root.tools) && root.tools.length)
+          context.push(t("toolDefinitions", { count: root.tools.length }));
+        var html = entries.map(function (entry) {
+          var key = entry.role + "\n" + entry.text;
+          if (detailSeenContent.has(key)) { hidden++; return ""; }
+          detailSeenContent.add(key);
+          return renderMessage(entry.role, entry.text, entry.label);
+        }).join("");
+        if (hidden) context.push(t("contextFolded", { count: hidden }));
+        return {
+          html: html,
+          context: context.length
+            ? '<div class="context-summary">' + esc(context.join(" · ")) + "</div>"
+            : "",
+        };
+      }
+      function readableResponse(root, raw) {
+        var entries = [];
+        if (root && typeof root === "object") {
+          var payload = root.type === "response.completed" && root.response ? root.response : root;
+          collectSemantic(payload.output || payload, "assistant", entries);
+        } else if (raw) {
+          var deltas = [], match, pattern = /"delta":"((?:\\.|[^"\\])*)"/g;
+          while ((match = pattern.exec(raw)) && deltas.length < 5000) {
+            try { deltas.push(JSON.parse('"' + match[1] + '"')); } catch (e) {}
+          }
+          if (deltas.length) entries.push({ role: "assistant", text: deltas.join(""), label: "" });
+        }
+        return entries.map(function (entry) {
+          return renderMessage(entry.role, entry.text, entry.label);
+        }).join("");
+      }
+      function collectSemantic(value, fallbackRole, out) {
+        if (value == null) return;
+        if (Array.isArray(value)) {
+          value.forEach(function (item) { collectSemantic(item, fallbackRole, out); });
+          return;
+        }
+        if (typeof value === "string") {
+          if (value.trim()) out.push({ role: fallbackRole, text: value, label: "" });
+          return;
+        }
+        if (typeof value !== "object") return;
+        var type = String(value.type || "").toLowerCase(), role = String(value.role || fallbackRole || "user").toLowerCase();
+        if (type === "function_call_output" || type === "custom_tool_call_output") {
+          out.push({ role: "tool", text: contentText(value.output || value.content), label: value.name || value.call_id || "" });
+          return;
+        }
+        if (type === "function_call" || type === "custom_tool_call") {
+          out.push({ role: "tool", text: contentText(value.arguments || value.input || value.content), label: value.name || "" });
+          return;
+        }
+        if (type === "compaction" || type === "compaction_trigger") {
+          out.push({ role: "compaction", text: contentText(value.summary || value.content) || t("compactionRole"), label: "" });
+          return;
+        }
+        if (type === "input_image" || type === "image" || type === "input_audio" || type === "video") {
+          out.push({ role: role, text: t("attachment"), label: type });
+          return;
+        }
+        if (type === "message" || value.role) {
+          var text = contentText(value.content || value.text);
+          if (text) out.push({ role: role === "assistant" ? "assistant" : role === "tool" ? "tool" : role === "system" || role === "developer" ? "system" : "user", text: text, label: "" });
+          return;
+        }
+        if (value.output) collectSemantic(value.output, fallbackRole, out);
+        else if (value.content) collectSemantic(value.content, fallbackRole, out);
+      }
+      function contentText(value) {
+        if (value == null) return "";
+        if (typeof value === "string") return value;
+        if (Array.isArray(value)) return value.map(contentText).filter(Boolean).join("\n");
+        if (typeof value !== "object") return String(value);
+        if (/image|audio|video/.test(String(value.type || ""))) return t("attachment");
+        return contentText(value.text || value.output_text || value.input_text || value.output || value.content || value.summary || "");
+      }
+      function renderMessage(role, text, label) {
+        if (!text) return "";
+        if (role === "system") return '<div class="context-summary">' + esc(t("systemContext", { chars: text.length })) + "</div>";
+        var roleKey = role === "assistant" ? "assistantRole" : role === "tool" ? "toolRole" : role === "compaction" ? "compactionRole" : "userRole";
+        var preview = text.length > 4000 ? text.slice(0, 1400) + "…" : text;
+        var full = text.length > 4000
+          ? '<details><summary>' + t("expandFull") + '</summary><div class="message-text">' + esc(text.slice(0, 16000)) + "</div></details>"
+          : "";
+        return '<div class="message-bubble ' + esc(role) + '"><div class="message-role">' + esc(t(roleKey) + (label ? " · " + label : "")) + '</div><div class="message-text">' + esc(preview) + "</div>" + full + "</div>";
+      }
+      function readableMetadata(record) {
+        var facets = record.facets || {}, preferred = ["project.name", "client", "request.kind", "auth.id", "reasoning.effort"];
+        var primary = '<div class="facet-badges">' + preferred.map(function (key) {
+          return (facets[key] || []).map(function (value) { return "<span>" + esc(facetLabel(key)) + ": " + esc(facetValueLabel(key, value)) + "</span>"; }).join("");
+        }).join("") + "</div>";
+        var rows = Object.keys(facets).sort().map(function (key) {
+          return "<dt>" + esc(facetLabel(key)) + "</dt><dd>" + esc((facets[key] || []).map(function (value) { return facetValueLabel(key, value); }).join("、")) + "</dd>";
+        }).join("");
+        return { primary: primary, details: rows ? '<details class="technical-meta"><summary>' + t("technicalMetadata") + "</summary><dl>" + rows + "</dl></details>" : "" };
       }
       function decode64(x) {
         if (!x) return "";

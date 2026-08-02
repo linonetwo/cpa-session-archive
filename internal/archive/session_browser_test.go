@@ -50,6 +50,27 @@ func TestExtractConversationSummary(t *testing.T) {
 	if got := extractConversationSummary(body); got != "Build the archive browser" { t.Fatalf("summary=%q", got) }
 }
 
+func TestExtractConversationSummarySkipsEnvironmentBoilerplate(t *testing.T) {
+	body := []byte(`{"input":[{"role":"user","content":[{"type":"input_text","text":"<environment_context>workspace</environment_context>"},{"type":"input_text","text":"Investigate the real failure"}]}]}`)
+	if got := extractConversationSummary(body); got != "Investigate the real failure" { t.Fatalf("summary=%q", got) }
+}
+
+func TestExtractConversationSummaryFromStringInput(t *testing.T) {
+	if got := extractConversationSummary([]byte(`{"input":"Summarize this repository"}`)); got != "Summarize this repository" { t.Fatalf("summary=%q", got) }
+}
+
+func TestRepairSessionSummaries(t *testing.T) {
+	store, err := OpenStore(filepath.Join(t.TempDir(), "archive.sqlite"), false)
+	if err != nil { t.Fatal(err) }
+	defer store.DB.Close()
+	now := time.Now()
+	body := []byte(`{"input":[{"role":"user","content":[{"type":"input_text","text":"<environment_context>workspace</environment_context>"},{"type":"input_text","text":"Explain the actual outage"}]}]}`)
+	if err = store.PutBatch([]Record{{RequestID: "bad-summary", SessionID: "session", Summary: "<environment_context>workspace</environment_context>", StartedAt: now, CompletedAt: now, OriginalRequest: body}}); err != nil { t.Fatal(err) }
+	if err = store.RepairSessionSummaries(context.Background()); err != nil { t.Fatal(err) }
+	sessions, err := store.SessionsFiltered(context.Background(), 10, map[string]string{})
+	if err != nil || len(sessions) != 1 || sessions[0].Summary != "Explain the actual outage" { t.Fatalf("sessions=%+v err=%v", sessions, err) }
+}
+
 func TestBackfillSessionProjection(t *testing.T) {
 	store, err := OpenStore(filepath.Join(t.TempDir(), "archive.sqlite"), false)
 	if err != nil { t.Fatal(err) }
