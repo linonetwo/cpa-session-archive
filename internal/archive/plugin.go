@@ -148,7 +148,7 @@ func (p *Plugin) configure(raw []byte) ([]byte, error) {
 		p.wg.Add(1)
 		go p.sender()
 	}
-	reg := map[string]any{"schema_version": 2, "metadata": map[string]any{"Name": "cpa-session-archive", "Version": "0.4.6", "Author": "OneTwo", "GitHubRepository": "https://github.com/linonetwo/cpa-session-archive", "ConfigFields": []any{}}, "capabilities": map[string]any{"request_interceptor": true, "request_lifecycle_plugin": true, "response_interceptor": true, "response_stream_interceptor": true, "management_api": true}}
+	reg := map[string]any{"schema_version": 2, "metadata": map[string]any{"Name": "cpa-session-archive", "Version": "0.4.7", "Author": "OneTwo", "GitHubRepository": "https://github.com/linonetwo/cpa-session-archive", "ConfigFields": []any{}}, "capabilities": map[string]any{"request_interceptor": true, "request_lifecycle_plugin": true, "response_interceptor": true, "response_stream_interceptor": true, "management_api": true}}
 	return ok(reg)
 }
 func (p *Plugin) captureRequest(r intercept, afterAuth bool) {
@@ -433,9 +433,8 @@ func extractConversationSummary(body []byte) string {
 			for _, child := range item { walk(child, user) }
 		case string:
 			if user {
-				value := compactSummary(item)
-				lower := strings.ToLower(value)
-				if value != "" && !strings.HasPrefix(lower, "<environment_context>") && !strings.HasPrefix(lower, "<environment_info>") && !strings.HasPrefix(lower, "<workspace_info>") && !strings.HasPrefix(lower, "# files mentioned by the user:") {
+				value := meaningfulSummary(item)
+				if value != "" {
 					candidates = append(candidates, value)
 				}
 			}
@@ -444,6 +443,32 @@ func extractConversationSummary(body []byte) string {
 	walk(root, false)
 	if len(candidates) == 0 { return "" }
 	return candidates[len(candidates)-1]
+}
+func meaningfulSummary(value string) string {
+	value = strings.TrimSpace(value)
+	for {
+		lower := strings.ToLower(value)
+		matched := false
+		for _, tag := range []string{"environment_context", "environment_info", "workspace_info", "in-app-browser-context", "app-context"} {
+			open := "<" + tag
+			if !strings.HasPrefix(lower, open) { continue }
+			close := "</" + tag + ">"
+			end := strings.Index(lower, close)
+			if end < 0 { return "" }
+			value = strings.TrimSpace(value[end+len(close):])
+			matched = true
+			break
+		}
+		if !matched { break }
+	}
+	lower := strings.ToLower(value)
+	if strings.HasPrefix(lower, "# files mentioned by the user:") {
+		marker := "## my request for codex:"
+		if pos := strings.Index(lower, marker); pos >= 0 {
+			value = strings.TrimSpace(value[pos+len(marker):])
+		} else { return "" }
+	}
+	return compactSummary(value)
 }
 func compactSummary(value string) string {
 	value = strings.Join(strings.Fields(value), " ")

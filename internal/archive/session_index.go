@@ -165,7 +165,7 @@ func (s *Store) NormalizeHistoricalSSE(ctx context.Context) error {
 // RepairSessionSummaries replaces transport boilerplate chosen by older
 // extractors with the last meaningful user message from the first request.
 func (s *Store) RepairSessionSummaries(ctx context.Context) error {
-	rows, err := s.DB.QueryContext(ctx, `SELECT s.session_id,COALESCE((SELECT original_ref FROM records r WHERE r.session_id=s.session_id ORDER BY r.started_at LIMIT 1),'') FROM session_summaries s WHERE s.summary='' OR lower(s.summary) LIKE '<environment_%' OR lower(s.summary) LIKE '# files mentioned by the user:%'`)
+	rows, err := s.DB.QueryContext(ctx, `SELECT s.session_id,COALESCE((SELECT original_ref FROM records r WHERE r.session_id=s.session_id ORDER BY r.started_at LIMIT 1),'') FROM session_summaries s WHERE s.summary='' OR lower(s.summary) LIKE '<environment_%' OR lower(s.summary) LIKE '<workspace_info>%' OR lower(s.summary) LIKE '<in-app-browser-context%' OR lower(s.summary) LIKE '<app-context>%' OR lower(s.summary) LIKE '# files mentioned by the user:%'`)
 	if err != nil { return err }
 	type candidate struct { sessionID, originalRef string }
 	var candidates []candidate
