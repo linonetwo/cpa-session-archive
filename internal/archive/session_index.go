@@ -74,11 +74,11 @@ func (s *Store) BackfillSessionIndex(ctx context.Context) error {
 		return err
 	}
 	log.Printf("session index backfill started: %d requests", len(ids))
-	for offset := 0; offset < len(ids); offset += 32 {
+	for offset := 0; offset < len(ids); offset += 8 {
 		if err = ctx.Err(); err != nil {
 			return err
 		}
-		end := offset + 32
+		end := offset + 8
 		if end > len(ids) {
 			end = len(ids)
 		}
@@ -155,7 +155,7 @@ func (s *Store) NormalizeHistoricalSSE(ctx context.Context) error {
 			if _, err = tx.Exec(`INSERT OR IGNORE INTO normalized_response_requests(request_id) VALUES(?)`, id); err != nil { tx.Rollback(); return err }
 		}
 		if err = tx.Commit(); err != nil { return err }
-		if changed > 0 && changed%100 == 0 { log.Printf("historical SSE normalization: %d responses", changed) }
+		if end%320 == 0 || end == len(ids) { log.Printf("historical SSE normalization: scanned=%d/%d rewritten=%d", end, len(ids), changed) }
 		time.Sleep(25 * time.Millisecond)
 	}
 	log.Printf("historical SSE normalization complete: %d/%d responses rewritten", changed, len(ids))

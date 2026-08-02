@@ -104,7 +104,8 @@ without scanning payload pages.
 For a much larger multi-writer installation, PostgreSQL is a reasonable home for
 searchable metadata and CAS hashes. Large binary/text blobs should still live in
 content-addressed object or volume storage rather than ordinary replicated rows.
-SQLite free pages are reused automatically; a large database file after a
+Maintenance projections and historical normalization are resumable and retry
+transient SQLite lock contention in the background. SQLite free pages are reused automatically; a large database file after a
 migration does not by itself mean that the same amount of live data remains.
 
 ## Privacy
