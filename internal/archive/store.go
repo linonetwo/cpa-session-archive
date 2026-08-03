@@ -584,7 +584,11 @@ func (s *Store) Stats(ctx context.Context) (Stats, error) {
 	// on network-backed volumes after an attach or replica rebuild.
 	_ = s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM session_indexed_requests`).Scan(&x.Records)
 	_ = s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM session_summaries`).Scan(&x.Sessions)
-	_ = s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM blobs`).Scan(&x.Blobs)
+	// blobs stores large payload chunks inline. COUNT(*) walks payload pages on
+	// SQLite and becomes painfully slow on a degraded network volume. rowid is
+	// monotonically allocated, so MAX(rowid) is an O(log n) operational
+	// estimate; exact blob cardinality is not user-facing archive information.
+	_ = s.DB.QueryRowContext(ctx, `SELECT COALESCE(MAX(rowid),0) FROM blobs`).Scan(&x.Blobs)
 	// Report the storage a user can act on. SUM(LENGTH(data)) scans every large
 	// blob and can block the management page for minutes while legacy rows are
 	// being migrated. File metadata is O(1) and includes SQLite WAL usage.
