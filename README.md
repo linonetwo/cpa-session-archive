@@ -97,6 +97,12 @@ Neither CPA's plugin ABI nor the browser buffers an export. The embedded HTML/CS
 
 Codex Desktop grouping uses the durable thread/session identity. Transient `execution_session_id` values remain searchable diagnostic facets but no longer split retries, remote executions, or compaction attempts into separate visible sessions. At startup, the collector repairs older projections transactionally; archived CAS payloads are not rewritten.
 
+The turn browser reads a narrow `turn_records` projection rather than the
+historical wide record table. Existing databases are backfilled after the HTTP
+server becomes ready, newest sessions first, in small transactions. Until one
+session is complete the API safely falls back to its original record query;
+ingestion and health checks never wait for a full-database index build.
+
 Facets are intentionally client-agnostic. The collector indexes metadata when present for:
 
 - project and workspace name/path;
