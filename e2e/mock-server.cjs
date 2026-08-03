@@ -22,7 +22,7 @@ const longAssistant =
   "END-OF-COMPLETE-ASSISTANT-ANSWER";
 const longToolOutput =
   "命令执行结果：\n" +
-  "TOOL-OUTPUT-LINE\n".repeat(1200) +
+  "TOOL-OUTPUT-LINE\n".repeat(7000) +
   "END-OF-LONG-TOOL-OUTPUT";
 const originalRequest = {
   model: "gpt-5.6-sol",
@@ -204,9 +204,9 @@ const server = http.createServer((request, response) => {
         tool_names: ["shell_command"],
       },
       records: [timeline],
-      total: 1,
+      total: 41,
       limit: 20,
-      offset: 0,
+      offset: Number(url.searchParams.get("offset") || 0),
     });
   }
   if (url.pathname === prefix + "/turns") {
@@ -227,9 +227,9 @@ const server = http.createServer((request, response) => {
           tool_names: ["shell_command"],
         },
       ],
-      total: 1,
+      total: 45,
       limit: 20,
-      offset: 0,
+      offset: Number(url.searchParams.get("offset") || 0),
     });
   }
   if (url.pathname === prefix + "/request-view") {
@@ -242,9 +242,15 @@ const server = http.createServer((request, response) => {
     return json(response, [requestRecord]);
   }
   if (url.pathname === prefix + "/export") {
+    const scope = url.searchParams.get("scope") || "session";
+    const format = url.searchParams.get("format") || "archive";
+    const filename =
+      scope === "all"
+        ? "cpa-session-archive.all." + format + ".jsonl"
+        : sessionID + "." + format + ".jsonl";
     return json(response, {
       url: "/archive-api/v1/exports/mock-ticket",
-      filename: sessionID + ".archive.jsonl",
+      filename,
       content_type: "application/x-ndjson",
     });
   }

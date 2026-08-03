@@ -39,11 +39,35 @@ test("long previews remain lightweight while turn details expose full content", 
     .first()
     .click();
   await expect(primary).toContainText("END-OF-COMPLETE-USER-COMMAND");
+  await primary
+    .locator(".turn-final")
+    .getByRole("button", { name: "展开完整内容" })
+    .click();
+  await expect(primary).toContainText("END-OF-COMPLETE-ASSISTANT-ANSWER");
+
+  await page
+    .locator("#turnPagination")
+    .getByRole("button", { name: "下一页" })
+    .click();
+  await expect(page.locator("#turnPageInfo")).toContainText("第 2 / 3 页");
+  await page
+    .locator("#turnPagination")
+    .getByRole("button", { name: "上一页" })
+    .click();
+  await expect(page.locator("#turnPageInfo")).toContainText("第 1 / 3 页");
 
   await page.locator(".process-step").first().click();
   await expect(page.getByText("shell_command · 查看完整调用")).toBeVisible();
   await page.getByText("shell_command · 查看完整调用").click();
   await expect(page).toHaveURL(/\/tools\/call-long-output$/);
+  await expect(page.locator("#subDetail")).not.toContainText(
+    "END-OF-LONG-TOOL-OUTPUT",
+  );
+  await page
+    .locator("#subDetail .tool-card")
+    .last()
+    .getByRole("button", { name: "展开完整内容" })
+    .click();
   await expect(page.locator("#subDetail")).toContainText(
     "END-OF-LONG-TOOL-OUTPUT",
   );
@@ -111,6 +135,13 @@ test("session export exposes a reusable server-streamed JSONL download", async (
     'filename="mock-session-long-content.archive.jsonl"',
   );
   expect(await response.text()).toContain("END-OF-LONG-TOOL-OUTPUT");
+
+  await page.getByRole("button", { name: /返回会话列表/ }).click();
+  await page.locator("#allExportFormat").selectOption("sft");
+  await page.getByRole("button", { name: "下载全库" }).click();
+  await expect(page.locator("#allDownloadNotice a")).toHaveText(
+    "cpa-session-archive.all.sft.jsonl",
+  );
 });
 
 test("facets, i18n, deep links, and back navigation remain interactive", async ({
@@ -152,4 +183,34 @@ test("facets, i18n, deep links, and back navigation remain interactive", async (
   await page.getByRole("button", { name: /返回会话列表/ }).click();
   await expect(page).toHaveURL(/#\/sessions$/);
   await expect(page.locator("#listView")).toBeVisible();
+});
+
+test("session pagination and loading SQL remain visible and operable", async ({
+  page,
+}) => {
+  let delayed = false;
+  await page.route("**/cpa-session-archive/turns?**", async (route) => {
+    if (!delayed) {
+      delayed = true;
+      await new Promise((resolve) => setTimeout(resolve, 600));
+    }
+    await route.continue();
+  });
+  await page.locator("tbody tr").first().click();
+  await expect(page.locator("#loading")).toHaveClass(/open/);
+  await expect(page.locator("#loadingSQL")).toContainText(
+    "SELECT request_id, key_id, summary",
+  );
+  await expect(page.locator(".turn-card")).toBeVisible();
+  await expect(page.locator("#pageInfo")).toContainText("第 1 / 3 页");
+
+  await page.getByRole("button", { name: "末页" }).click();
+  await expect(page.locator("#pageInfo")).toContainText("第 3 / 3 页");
+  await page.getByRole("button", { name: "首页" }).click();
+  await expect(page.locator("#pageInfo")).toContainText("第 1 / 3 页");
+  await page.locator("#pageJump").fill("2");
+  await page.locator("#pageJump").press("Enter");
+  await expect(page.locator("#pageInfo")).toContainText("第 2 / 3 页");
+  await page.locator("#sessionOrder").selectOption("asc");
+  await expect(page.locator("#pageInfo")).toContainText("第 1 / 3 页");
 });
