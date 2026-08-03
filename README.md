@@ -34,9 +34,10 @@ instead of being silently discarded.
 
 ## Build
 
-~~~bash
-docker build -t cpa-session-archive:0.7.5 .
-~~~
+Tagged releases are built and published to GHCR by GitHub Actions. The same
+workflow runs Go tests, browser end-to-end tests, native plugin builds, and an
+image build before publishing; local or cluster nodes do not need to run
+Docker builds.
 
 The image contains both /plugin/cpa-session-archive.so and the collector executable.
 
