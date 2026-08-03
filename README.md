@@ -50,9 +50,9 @@ plugins:
     cpa-session-archive:
       enabled: true
       endpoint: http://cpa-session-collector:8080
-      queue_size: 2048
+      queue_size: 64
       max_body_bytes: 67108864
-      timeout: 5s
+      timeout: 30s
       store_upstream_request: false
 ~~~
 
@@ -115,6 +115,107 @@ The same data is available through `GET /v1/facets` and arbitrary facet query pa
 ~~~
 
 The collector migrates the v0.1 inline-gzip schema online. Old payload columns are nulled after their CAS manifests are committed. SQLite can reuse freed pages without an immediate blocking VACUUM.
+
+## Interaction contract and E2E test tree
+
+The following tree is the product contract for every expected user-visible
+interaction. Similar facet dimensions are grouped because the same selector
+behavior applies to every facet value.
+
+~~~text
+Session archive / 会话归档
+├── Host integration and locale
+│   ├── Open from the CPA-Manager-Plus "会话归档" plugin menu
+│   ├── Follow the host zh-CN / en language without a reload
+│   ├── Render timestamps in the browser's locale and timezone
+│   └── Resolve a caller-key hash to its CPA alias when an alias exists
+├── Overview
+│   ├── Show actual archive storage used, session count, and record count
+│   ├── Select archive or SFT format and export the complete database
+│   └── Expose a reusable server-streamed .jsonl download link
+├── Collapsible faceted-search sidebar
+│   ├── Collapse or expand the entire sidebar
+│   ├── Search facet dimension names
+│   ├── Collapse or expand a facet group
+│   ├── Select one value in any available dimension
+│   │   ├── project / workspace / path / Git repository
+│   │   ├── client / originator / SDK / runtime / operating system
+│   │   ├── session / conversation / thread / turn / window
+│   │   ├── requested/resolved model / provider / request kind / stream
+│   │   ├── tool / input / content / message role
+│   │   └── caller key / upstream credential / outcome / HTTP status
+│   ├── Review active filters and their count
+│   ├── Set the result limit and apply the selected facets
+│   └── Reset every facet and restore the unfiltered list
+├── Session list
+│   ├── Show a useful title/first-user-command preview, never a UUID as title
+│   ├── Show project, source badges, caller-key alias, model, requests, last use
+│   └── Click a row to open its routed Session page
+├── Session page
+│   ├── Return to the session list
+│   ├── Switch newest-first / oldest-first
+│   ├── Select archive or SFT and download the complete Session
+│   ├── Show one card per durable user turn
+│   │   ├── Preview the user command and final/latest natural-language reply
+│   │   ├── Keep retries, compactions, prewarms, and tool continuations together
+│   │   └── Click the card to open its routed Turn page
+│   └── Navigate first / previous / page number / next / last
+├── Turn page
+│   ├── Return to the parent Session
+│   ├── Show caller-key alias, model, and localized activity time
+│   ├── Preview long user/final text and expand each to its complete content
+│   ├── Expand an intermediate process step
+│   │   ├── Read intermediate natural-language assistant messages
+│   │   ├── See compaction as an inline marker
+│   │   ├── Open a summarized tool call in its routed detail page
+│   │   └── Open the request-level diagnostic page
+│   └── Paginate large internal-request sequences
+├── Request page
+│   ├── Return to its Turn (or directly to Session for legacy records)
+│   ├── Show history/tool-definition counts without materializing their bodies
+│   ├── Open complete system instructions on demand
+│   ├── Expand long readable user/assistant text
+│   ├── Open each tool call/result
+│   ├── Expand normalized metadata (not an undifferentiated JSON wall)
+│   └── Open original request, translated request, or response diagnostics
+├── Tool-call page
+│   ├── Return to the parent Request
+│   ├── Show complete arguments and complete result
+│   ├── Look across nearby records when a result arrived in a continuation
+│   └── Lazily expand exceptionally large bodies
+├── Raw-diagnostic/system-instruction page
+│   ├── Return to the parent Request
+│   ├── Pretty-print JSON where possible
+│   ├── Copy the complete body
+│   └── Lazily expand content beyond the safe initial render limit
+└── Export and performance invariants
+    ├── Never buffer a Session or full-database export in browser memory
+    ├── Preserve messages, tools, calls/results, and CAS media references
+    ├── Keep list APIs on compact projections; rehydrate full text only in detail
+    ├── Keep original request/response and tool bodies lazy
+    ├── Use stable deep links and browser back/forward navigation at every level
+    └── Never duplicate secrets, media bytes, or long user text just for the UI
+~~~
+
+The Playwright suite in `e2e/` serves the real embedded management page against
+a mocked management API. Its fixtures deliberately include a long ambient
+suggestion command, a 17,730-character system instruction, a long assistant
+answer, a long tool result, rich facets, a key alias, and a streamed JSONL
+ticket. The tests assert the important boundary: previews may be truncated for
+performance, but every detail route must provide an explicit path to the
+complete content.
+
+Run the browser contract locally:
+
+~~~bash
+pnpm install
+pnpm exec playwright install chromium
+pnpm test:e2e
+~~~
+
+GitHub Actions runs the same suite with a mocked backend before building the
+plugin, collector, or container image. No production credentials or archived
+content are used by the tests.
 
 ## Storage backend
 

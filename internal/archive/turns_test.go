@@ -2,6 +2,7 @@ package archive
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -76,4 +77,52 @@ func TestCleanTurnTextRemovesClientWrappers(t *testing.T) {
 			t.Fatalf("cleanTurnText(%q)=%q, want %q", input, actual, expected)
 		}
 	}
+}
+
+func TestSessionTurnDetailRehydratesCompleteUserCommand(t *testing.T) {
+	store, err := OpenStore(filepath.Join(t.TempDir(), "archive.sqlite"), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.DB.Close()
+	fullText := "You are an expert at upholding safety and compliance standards. " +
+		strings.Repeat("This paragraph must remain available in the turn detail. ", 180) +
+		"END-OF-COMPLETE-USER-COMMAND"
+	body := []byte(`{"input":[{"role":"user","content":[{"type":"input_text","text":` + mustJSON(fullText) + `}]}]}`)
+	now := time.Now()
+	record := Record{
+		RequestID:       "long-request",
+		SessionID:       "long-session",
+		Summary:         compactSummary(fullText),
+		ResponsePreview: "Complete answer",
+		OriginalRequest: body,
+		StartedAt:       now,
+		CompletedAt:     now,
+		Facets:          map[string][]string{"turn.id": {"long-turn"}},
+	}
+	if err = store.PutBatch([]Record{record}); err != nil {
+		t.Fatal(err)
+	}
+	page, err := store.SessionTurnPage(context.Background(), "long-session", 20, 0, "asc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(page.Turns[0].UserText, "END-OF-COMPLETE-USER-COMMAND") {
+		t.Fatal("list projection unexpectedly materialized the full command")
+	}
+	detail, err := store.SessionTurnDetail(context.Background(), "long-session", "long-turn", 20, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Turn.UserText != fullText {
+		t.Fatalf("detail user text length=%d, want %d", len(detail.Turn.UserText), len(fullText))
+	}
+	if !strings.HasSuffix(detail.Turn.UserText, "END-OF-COMPLETE-USER-COMMAND") {
+		t.Fatal("detail did not preserve the end of the complete user command")
+	}
+}
+
+func mustJSON(value string) string {
+	encoded, _ := json.Marshal(value)
+	return string(encoded)
 }

@@ -626,7 +626,72 @@ func collectSummaryStrings(value any, candidates *[]string) {
 		}
 	}
 }
+
+// extractConversationUserText returns the complete latest user-authored text
+// from an original client request. Unlike extractConversationSummary, this is
+// intentionally not length-limited. Callers should use it only on a detail
+// route where the user explicitly asked to materialize one turn.
+func extractConversationUserText(body []byte) string {
+	var root any
+	if json.Unmarshal(body, &root) != nil {
+		return ""
+	}
+	var candidates []string
+	var walk func(any)
+	walk = func(value any) {
+		switch item := value.(type) {
+		case map[string]any:
+			role, _ := item["role"].(string)
+			if strings.EqualFold(role, "user") {
+				for _, key := range []string{"text", "prompt", "content", "input"} {
+					collectUserTextStrings(item[key], &candidates)
+				}
+			}
+			for _, key := range []string{"input", "messages"} {
+				walk(item[key])
+			}
+		case []any:
+			for _, child := range item {
+				walk(child)
+			}
+		}
+	}
+	walk(root)
+	if len(candidates) == 0 {
+		if object, ok := root.(map[string]any); ok {
+			collectUserTextStrings(object["input"], &candidates)
+		}
+	}
+	if len(candidates) == 0 {
+		return ""
+	}
+	return candidates[len(candidates)-1]
+}
+
+func collectUserTextStrings(value any, candidates *[]string) {
+	switch item := value.(type) {
+	case string:
+		if text := meaningfulUserText(item); text != "" {
+			*candidates = append(*candidates, text)
+		}
+	case []any:
+		for _, child := range item {
+			collectUserTextStrings(child, candidates)
+		}
+	case map[string]any:
+		for _, key := range []string{"text", "input_text", "content"} {
+			if child, ok := item[key]; ok {
+				collectUserTextStrings(child, candidates)
+			}
+		}
+	}
+}
+
 func meaningfulSummary(value string) string {
+	return compactSummary(meaningfulUserText(value))
+}
+
+func meaningfulUserText(value string) string {
 	value = strings.TrimSpace(html.UnescapeString(value))
 	lower := strings.ToLower(value)
 	for _, marker := range []string{"\nuser prompt:\n", "\r\nuser prompt:\r\n"} {
@@ -667,7 +732,7 @@ func meaningfulSummary(value string) string {
 			return ""
 		}
 	}
-	return compactSummary(value)
+	return cleanTurnText(value)
 }
 
 func unwrapSummaryTag(value, tag string) string {

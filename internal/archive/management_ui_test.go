@@ -38,6 +38,8 @@ func TestManagementUIContainsBilingualFacetedExperience(t *testing.T) {
 		[]byte("renderTurnProcess"),
 		[]byte("openTurnTool"),
 		[]byte("backToTurn"),
+		[]byte("renderExpandableTurnText"),
+		[]byte("turn-text-detail"),
 	}
 	for _, check := range checks {
 		if !bytes.Contains(managementHTML, check) {

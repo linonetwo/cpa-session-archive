@@ -85,6 +85,9 @@ func (s *Store) SessionTurnDetail(ctx context.Context, sessionID, turnID string,
 			continue
 		}
 		out := TurnDetailPage{Turn: group.summary, Records: []RequestTimelineView{}, Total: len(group.requestIDs), Limit: limit, Offset: offset}
+		if fullText := s.fullTurnUserText(ctx, group); fullText != "" {
+			out.Turn.UserText = fullText
+		}
 		if offset >= len(group.requestIDs) {
 			return out, nil
 		}
@@ -107,6 +110,37 @@ func (s *Store) SessionTurnDetail(ctx context.Context, sessionID, turnID string,
 		return out, nil
 	}
 	return TurnDetailPage{}, errors.New("turn not found")
+}
+
+// fullTurnUserText rehydrates only the original request payloads needed to
+// recover one complete user command. The compact summary remains sufficient
+// for list pages, avoiding a second long-text copy in SQLite.
+func (s *Store) fullTurnUserText(ctx context.Context, group turnGroup) string {
+	var fallback string
+	for _, requestID := range group.requestIDs {
+		var originalRef string
+		var legacy []byte
+		if err := s.DB.QueryRowContext(ctx, `SELECT COALESCE(original_ref,''),original_request_gz FROM records WHERE request_id=? LIMIT 1`, requestID).Scan(&originalRef, &legacy); err != nil {
+			continue
+		}
+		var body []byte
+		if originalRef != "" {
+			body, _ = s.LoadPayload(originalRef)
+		} else {
+			body = gunzipBytes(legacy)
+		}
+		candidate := cleanTurnText(extractConversationUserText(body))
+		if candidate == "" {
+			continue
+		}
+		if fallback == "" {
+			fallback = candidate
+		}
+		if group.normalizedSummary == "" || normalizeTurnSummary(compactSummary(candidate)) == group.normalizedSummary {
+			return candidate
+		}
+	}
+	return fallback
 }
 
 func (s *Store) sessionTurnGroups(ctx context.Context, sessionID string) ([]turnGroup, error) {

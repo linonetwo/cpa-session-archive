@@ -3,3 +3,6 @@
 *.sqlite-wal
 *.so
 /cpa-session-collector
+/node_modules/
+/playwright-report/
+/test-results/

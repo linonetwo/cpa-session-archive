@@ -11,8 +11,17 @@ jobs:
         with:
           go-version: "1.24.x"
           cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: pnpm/action-setup@v4
+        with:
+          version: "11"
       - run: sudo apt-get update && sudo apt-get install -y gcc libc6-dev
       - run: go test ./...
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm test:e2e
       - run: CGO_ENABLED=1 go build -tags cshared -buildmode=c-shared -o /tmp/cpa-session-archive.so ./cmd/cpa-session-archive
       - run: CGO_ENABLED=1 go build -o /tmp/cpa-session-collector ./cmd/cpa-session-collector
       - run: docker build -t cpa-session-archive:test .

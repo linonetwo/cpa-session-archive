@@ -155,6 +155,9 @@
         max-height: 13em;
         overflow: hidden;
       }
+      .turn-text-detail {
+        max-height: none;
+      }
       .turn-final {
         border-left: 4px solid #10b981;
         padding-left: 12px;
@@ -1910,6 +1913,7 @@
       }
       async function loadTurnPage(pageNumber) {
         turnProcessPage = Math.max(1, pageNumber || turnProcessPage || 1);
+        fullTexts = {};
         var offset = (turnProcessPage - 1) * turnProcessPageSize;
         var page = await api(
           "/turns?session_id=" +
@@ -1925,8 +1929,9 @@
         );
         var turn = page.turn || {};
         turnProcessTotal = page.total || 0;
+        var titleText = turn.user_text || t("untitled");
         document.getElementById("turnTitle").textContent =
-          turn.user_text || t("untitled");
+          titleText.length > 180 ? titleText.slice(0, 180) + "…" : titleText;
         document.getElementById("turnMeta").textContent = [
           keyName(turn.key_id),
           turn.model,
@@ -1937,13 +1942,13 @@
         document.getElementById("turnPrimary").innerHTML =
           "<section><h3>" +
           esc(t("userCommand")) +
-          '</h3><div class="turn-text">' +
-          esc(turn.user_text || t("untitled")) +
-          '</div></section><section class="turn-final"><h3>' +
+          "</h3>" +
+          renderExpandableTurnText(turn.user_text || t("untitled")) +
+          '</section><section class="turn-final"><h3>' +
           esc(t("finalAnswer")) +
-          '</h3><div class="turn-text">' +
-          esc(turn.final_text || t("noFinalAnswer")) +
-          "</div></section>";
+          "</h3>" +
+          renderExpandableTurnText(turn.final_text || t("noFinalAnswer")) +
+          "</section>";
         document.getElementById("turnProcess").innerHTML = (page.records || [])
           .map(function (view, index) {
             return renderTurnProcess(view, offset + index + 1);
@@ -2412,6 +2417,23 @@
         var id = "full-" + ++fullTextSequence;
         fullTexts[id] = text;
         return id;
+      }
+      function renderExpandableTurnText(text) {
+        text = String(text || "");
+        if (text.length <= 1600)
+          return (
+            '<div class="turn-text turn-text-detail">' + esc(text) + "</div>"
+          );
+        var id = retainFullText(text);
+        return (
+          '<div class="turn-text">' +
+          esc(text.slice(0, 1200) + "…") +
+          "</div><button onclick=\"expandFullText('" +
+          id +
+          "',this)\">" +
+          esc(t("expandFull")) +
+          '</button><div class="turn-text turn-text-detail full-content" style="display:none"></div>'
+        );
       }
       function expandFullText(id, button) {
         var target = button.nextElementSibling;
