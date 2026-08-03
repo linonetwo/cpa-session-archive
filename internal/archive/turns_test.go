@@ -55,11 +55,21 @@ func TestSessionTurnProjectionBackfillsLegacyRecords(t *testing.T) {
 	if err = store.PutBatch(records); err != nil {
 		t.Fatal(err)
 	}
+	var liveProjected int
+	if err = store.DB.QueryRow(`SELECT COUNT(*) FROM turn_records WHERE session_id='legacy-session'`).Scan(&liveProjected); err != nil {
+		t.Fatal(err)
+	}
+	if liveProjected != len(records) {
+		t.Fatalf("live projected=%d, want %d", liveProjected, len(records))
+	}
 	if _, err = store.DB.Exec(`DELETE FROM turn_records`); err != nil {
 		t.Fatal(err)
 	}
 	if err = store.BackfillTurnProjection(context.Background(), 1, 0); err != nil {
 		t.Fatal(err)
+	}
+	if err = store.BackfillTurnProjection(context.Background(), 1, 0); err != nil {
+		t.Fatalf("idempotent backfill failed: %v", err)
 	}
 	var projected int
 	if err = store.DB.QueryRow(`SELECT COUNT(*) FROM turn_records WHERE session_id='legacy-session'`).Scan(&projected); err != nil {
