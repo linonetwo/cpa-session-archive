@@ -3,6 +3,7 @@ package archive
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -85,9 +86,6 @@ func (s *Store) SessionTurnDetail(ctx context.Context, sessionID, turnID string,
 			continue
 		}
 		out := TurnDetailPage{Turn: group.summary, Records: []RequestTimelineView{}, Total: len(group.requestIDs), Limit: limit, Offset: offset}
-		if fullText := s.fullTurnUserText(ctx, group); fullText != "" {
-			out.Turn.UserText = fullText
-		}
 		if offset >= len(group.requestIDs) {
 			return out, nil
 		}
@@ -96,20 +94,51 @@ func (s *Store) SessionTurnDetail(ctx context.Context, sessionID, turnID string,
 			end = len(group.requestIDs)
 		}
 		for _, requestID := range group.requestIDs[offset:end] {
-			view, loadErr := s.RequestTimeline(ctx, requestID)
+			view, loadErr := s.RequestTimelinePreview(ctx, requestID)
 			if loadErr != nil {
 				return TurnDetailPage{}, loadErr
-			}
-			for index := range view.Entries {
-				if view.Entries[index].Role == "tool_call" || view.Entries[index].Role == "tool_result" {
-					view.Entries[index].Text = ""
-				}
 			}
 			out.Records = append(out.Records, view)
 		}
 		return out, nil
 	}
 	return TurnDetailPage{}, errors.New("turn not found")
+}
+
+func (s *Store) CachedTurnText(ctx context.Context, sessionID, turnID string) (string, bool, error) {
+	var compressed []byte
+	err := s.DB.QueryRowContext(ctx, `SELECT text_gz FROM turn_texts WHERE session_id=? AND turn_id=?`, sessionID, turnID).Scan(&compressed)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return string(gunzipBytes(compressed)), true, nil
+}
+
+func (s *Store) BuildTurnText(ctx context.Context, sessionID, turnID string) (string, error) {
+	groups, err := s.sessionTurnGroups(ctx, sessionID)
+	if err != nil {
+		return "", err
+	}
+	for _, group := range groups {
+		if group.summary.TurnID != turnID {
+			continue
+		}
+		if fullText := s.fullTurnUserText(ctx, group); fullText != "" {
+			return fullText, nil
+		}
+		return group.summary.UserText, nil
+	}
+	return "", errors.New("turn not found")
+}
+
+func (s *Store) SaveTurnText(ctx context.Context, sessionID, turnID, text string) error {
+	_, err := s.DB.ExecContext(ctx, `INSERT INTO turn_texts(session_id,turn_id,text_gz,updated_at) VALUES(?,?,?,?)
+		ON CONFLICT(session_id,turn_id) DO UPDATE SET text_gz=excluded.text_gz,updated_at=excluded.updated_at`,
+		sessionID, turnID, gzipBytes([]byte(text)), time.Now().UTC().Format(time.RFC3339Nano))
+	return err
 }
 
 // fullTurnUserText rehydrates only the original request payloads needed to

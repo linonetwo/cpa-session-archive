@@ -74,6 +74,7 @@ Endpoints:
 - GET /v1/request-view?id={request-id}
 - GET /v1/turns?session_id={session-id}&order=asc|desc
 - GET /v1/turns?session_id={session-id}&turn_id={turn-id}&limit=20&offset=0
+- GET /v1/turn-text?session_id={session-id}&turn_id={turn-id}
 - GET /v1/request-context?id={request-id}&before=0&limit=16
 - GET /v1/sessions/{session-id}/export
 - GET /v1/export-tickets?scope=session|all&format=archive|sft&session_id={session-id} (management proxy only)
@@ -83,6 +84,13 @@ Endpoints:
 ## Management UI and faceted search
 
 With CPA management API support enabled, CPA-Manager-Plus shows a session archive plugin page. The page provides storage statistics, dynamic facet selectors and routed session, turn, request, tool-call, and raw-diagnostic views. A session first shows only each user command and the corresponding final/latest natural-language response. Expanding a turn reveals intermediate assistant explanations, compaction points, and compact tool summaries; opening a tool summary is the third level that materializes its complete arguments and result. Both the turn index and long internal-request sequences are paginated. System instructions, raw diagnostics, tool bodies, and long fields are materialized only after a click, so a large coding session does not freeze the page.
+
+Turn detail initially reads only the narrow `turn_records` projection. When a
+user asks for the complete original command, `/v1/turn-text` starts one
+background CAS rehydration job and returns `202 building`; the UI polls until
+the compressed per-turn cache is ready. This keeps the initial detail route
+responsive even when a stateless request contains thousands of repeated
+conversation items or large attachment references.
 
 Responses clients commonly resend the complete conversation in every stateless request. The archive retains those lossless protocol records, while the human timeline compares each request with its predecessor and renders only newly added messages, tool results, and assistant output. Codex records are reconstructed with their durable `turn.id`; Kimi K3, Kimi K2.7, and historical clients without a turn identifier use consecutive normalized user-command runs. Compaction, retries, and tool-result continuations remain inside the same visible turn. A compaction is therefore an inline process marker, never a new session card. Background/system threads remain identifiable through the `thread.source` facet.
 

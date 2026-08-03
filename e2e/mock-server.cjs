@@ -24,6 +24,7 @@ const longToolOutput =
   "命令执行结果：\n" +
   "TOOL-OUTPUT-LINE\n".repeat(7000) +
   "END-OF-LONG-TOOL-OUTPUT";
+let turnTextPolls = 0;
 const originalRequest = {
   model: "gpt-5.6-sol",
   instructions: longSystem,
@@ -187,12 +188,19 @@ const server = http.createServer((request, response) => {
       },
     ]);
   }
+  if (url.pathname === prefix + "/turn-text") {
+    turnTextPolls++;
+    if (turnTextPolls === 1) {
+      return json(response, { status: "building" });
+    }
+    return json(response, { status: "ok", text: longUser });
+  }
   if (url.pathname === prefix + "/turns" && url.searchParams.has("turn_id")) {
     return json(response, {
       turn: {
         turn_id: turnID,
         session_id: sessionID,
-        user_text: longUser,
+        user_text: longUser.slice(0, 160) + "…",
         final_text: longAssistant,
         requests: 23,
         first_at: "2026-08-03T12:34:56+08:00",
@@ -205,7 +213,7 @@ const server = http.createServer((request, response) => {
       },
       records: [timeline],
       total: 41,
-      limit: 20,
+      limit: 10,
       offset: Number(url.searchParams.get("offset") || 0),
     });
   }

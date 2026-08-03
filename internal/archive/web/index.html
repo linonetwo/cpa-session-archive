@@ -947,6 +947,8 @@
           loadingSession: "正在查询 Session 请求索引…",
           loadingTurns: "正在按用户回合整理对话…",
           loadingTurn: "正在按需加载本回合的中间过程…",
+          loadingFull: "正在后台还原完整用户命令…",
+          fullUnavailable: "暂时无法还原完整内容，请稍后重试。",
           loadingRequest: "正在按需加载完整请求、响应和工具结果…",
           loadingExport: "正在准备可重复下载的流式链接…",
           firstPage: "首页",
@@ -1081,6 +1083,8 @@
           loadingSession: "Querying the session request index…",
           loadingTurns: "Grouping the conversation into user turns…",
           loadingTurn: "Loading this turn's intermediate process on demand…",
+          loadingFull: "Rehydrating the complete user command in the background…",
+          fullUnavailable: "Complete content is temporarily unavailable. Try again shortly.",
           loadingRequest:
             "Loading the full request, response and tool results on demand…",
           loadingExport: "Preparing a reusable streaming download link…",
@@ -1229,7 +1233,7 @@
         detailRecords = [],
         currentTurnID = "",
         turnProcessPage = 1,
-        turnProcessPageSize = 20,
+        turnProcessPageSize = 10,
         turnProcessTotal = 0,
         currentRequestID = "",
         currentRequestRecord = null;
@@ -1241,8 +1245,10 @@
         sessions:
           "SELECT s.session_id, s.requests, s.first_at, s.last_at, s.key_id, s.model, s.project, s.summary\nFROM session_summaries s\nWHERE EXISTS (SELECT 1 FROM session_facets f WHERE f.session_id = s.session_id AND f.name = ? AND f.value = ?) …\nORDER BY s.last_at DESC LIMIT ?",
         session:
-          "SELECT request_id, key_id, summary, response_preview, requested_model, model, outcome, status_code, started_at, completed_at, facets_json\nFROM records\nWHERE session_id = ?\nORDER BY started_at, id\n-- grouped into durable turn.id values or consecutive user-summary runs",
-        turn: "SELECT request_id, original_ref, response_ref, facets_json\nFROM records\nWHERE session_id = ? AND request_id IN (…)\nORDER BY started_at, id LIMIT ? OFFSET ?",
+          "SELECT request_id, key_id, summary, response_preview, requested_model, model, outcome, status_code, started_at, completed_at, facets_json\nFROM turn_records\nWHERE session_id = ?\nORDER BY started_at, id\n-- incomplete projections safely fall back to records; rows are grouped by durable turn.id or consecutive user-summary runs",
+        turn: "SELECT request_id, key_id, summary, response_preview, requested_model, model, outcome, status_code, started_at, completed_at, facets_json\nFROM turn_records\nWHERE session_id = ? AND request_id IN (…)\nORDER BY started_at, id LIMIT ? OFFSET ?\n-- raw CAS payloads are loaded only from deeper diagnostic routes",
+        turnText:
+          "SELECT original_ref FROM records WHERE session_id = ? AND request_id IN (…)\n-- expanded once in a background job, then cached in turn_texts",
         request:
           "SELECT …, original_ref, upstream_ref, response_ref, metadata_json, facets_json\nFROM records\nWHERE request_id = ? LIMIT 1",
         export:
@@ -1943,7 +1949,7 @@
           "<section><h3>" +
           esc(t("userCommand")) +
           "</h3>" +
-          renderExpandableTurnText(turn.user_text || t("untitled")) +
+          renderLazyTurnText(turn.user_text || t("untitled")) +
           '</section><section class="turn-final"><h3>' +
           esc(t("finalAnswer")) +
           "</h3>" +
@@ -2434,6 +2440,48 @@
           esc(t("expandFull")) +
           '</button><div class="turn-text turn-text-detail full-content" style="display:none"></div>'
         );
+      }
+      function renderLazyTurnText(text) {
+        text = String(text || "");
+        if (!text.endsWith("…") && text.length < 150)
+          return '<div class="turn-text turn-text-detail">' + esc(text) + "</div>";
+        return (
+          '<div class="turn-text turn-text-detail">' +
+          esc(text) +
+          '</div><button onclick="expandRemoteTurnText(this)">' +
+          esc(t("expandFull")) +
+          '</button><div class="turn-text turn-text-detail full-content" style="display:none"></div>'
+        );
+      }
+      async function expandRemoteTurnText(button) {
+        var target = button.nextElementSibling;
+        button.disabled = true;
+        button.textContent = t("loadingFull");
+        try {
+          for (var attempt = 0; attempt < 90; attempt++) {
+            var result = await api(
+              "/turn-text?session_id=" +
+                encodeURIComponent(detailSessionID) +
+                "&turn_id=" +
+                encodeURIComponent(currentTurnID),
+            );
+            if (result.status === "ok") {
+              target.textContent = result.text || "";
+              target.style.display = "block";
+              button.remove();
+              return;
+            }
+            await new Promise(function (resolve) {
+              setTimeout(resolve, 2000);
+            });
+          }
+          throw Error("turn text build timeout");
+        } catch (error) {
+          target.textContent = t("fullUnavailable");
+          target.style.display = "block";
+          button.disabled = false;
+          button.textContent = t("expandFull");
+        }
       }
       function expandFullText(id, button) {
         var target = button.nextElementSibling;

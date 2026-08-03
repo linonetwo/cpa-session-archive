@@ -17,10 +17,12 @@ import (
 )
 
 type server struct {
-	s        *archive.Store
-	q        chan archive.Record
-	ticketMu sync.Mutex
-	tickets  map[string]exportTicket
+	s            *archive.Store
+	q            chan archive.Record
+	ticketMu     sync.Mutex
+	tickets      map[string]exportTicket
+	turnTextMu   sync.Mutex
+	turnTextJobs map[string]bool
 }
 
 type exportTicket struct {
@@ -109,7 +111,7 @@ func main() {
 			}
 		}()
 	}
-	s := &server{s: st, q: make(chan archive.Record, 4096), tickets: map[string]exportTicket{}}
+	s := &server{s: st, q: make(chan archive.Record, 4096), tickets: map[string]exportTicket{}, turnTextJobs: map[string]bool{}}
 	go s.writer()
 	http.HandleFunc("/healthz", s.health)
 	http.HandleFunc("/ingest", s.ingest)
@@ -121,6 +123,7 @@ func main() {
 	http.HandleFunc("/v1/request-context", s.requestContext)
 	http.HandleFunc("/v1/request-view", s.requestView)
 	http.HandleFunc("/v1/turns", s.turns)
+	http.HandleFunc("/v1/turn-text", s.turnText)
 	http.HandleFunc("/v1/export-tickets", s.exportTicket)
 	http.HandleFunc("/archive-api/v1/exports/", s.ticketedExport)
 	http.HandleFunc("/v1/maintenance/gc", s.gc)
@@ -379,6 +382,48 @@ func (s *server) turns(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, out)
+}
+func (s *server) turnText(w http.ResponseWriter, r *http.Request) {
+	sessionID := strings.TrimSpace(r.URL.Query().Get("session_id"))
+	turnID := strings.TrimSpace(r.URL.Query().Get("turn_id"))
+	if sessionID == "" || turnID == "" {
+		http.Error(w, "session and turn required", http.StatusBadRequest)
+		return
+	}
+	if text, found, err := s.s.CachedTurnText(r.Context(), sessionID, turnID); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	} else if found {
+		writeJSON(w, map[string]any{"status": "ok", "text": text})
+		return
+	}
+	jobID := sessionID + "\x00" + turnID
+	s.turnTextMu.Lock()
+	running := s.turnTextJobs[jobID]
+	if !running {
+		s.turnTextJobs[jobID] = true
+	}
+	s.turnTextMu.Unlock()
+	if !running {
+		go func() {
+			defer func() {
+				s.turnTextMu.Lock()
+				delete(s.turnTextJobs, jobID)
+				s.turnTextMu.Unlock()
+			}()
+			text, err := s.s.BuildTurnText(context.Background(), sessionID, turnID)
+			if err != nil {
+				log.Printf("turn text build failed session=%s turn=%s: %v", sessionID, turnID, err)
+				return
+			}
+			if err = s.s.SaveTurnText(context.Background(), sessionID, turnID, text); err != nil {
+				log.Printf("turn text save failed session=%s turn=%s: %v", sessionID, turnID, err)
+			}
+		}()
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	writeJSON(w, map[string]any{"status": "building"})
 }
 func (s *server) exportTicket(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {

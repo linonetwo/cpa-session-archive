@@ -49,12 +49,12 @@ test("long previews remain lightweight while turn details expose full content", 
     .locator("#turnPagination")
     .getByRole("button", { name: "下一页" })
     .click();
-  await expect(page.locator("#turnPageInfo")).toContainText("第 2 / 3 页");
+  await expect(page.locator("#turnPageInfo")).toContainText("第 2 / 5 页");
   await page
     .locator("#turnPagination")
     .getByRole("button", { name: "上一页" })
     .click();
-  await expect(page.locator("#turnPageInfo")).toContainText("第 1 / 3 页");
+  await expect(page.locator("#turnPageInfo")).toContainText("第 1 / 5 页");
 
   await page.locator(".process-step").first().click();
   await expect(page.getByText("shell_command · 查看完整调用")).toBeVisible();

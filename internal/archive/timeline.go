@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -37,6 +38,68 @@ type RequestTimelineView struct {
 	SystemChars     int                 `json:"system_chars"`
 	ToolDefinitions int                 `json:"tool_definitions"`
 	Entries         []TimelineEntry     `json:"entries"`
+}
+
+// RequestTimelinePreview returns only searchable projections. It deliberately
+// avoids expanding the original request/response CAS payloads: those may
+// contain a complete stateless conversation and large attachments, and are
+// loaded only after the user opens the request/tool diagnostic route.
+func (s *Store) RequestTimelinePreview(ctx context.Context, id string) (RequestTimelineView, error) {
+	var view RequestTimelineView
+	var responsePreview, startedRaw, completedRaw, facetsRaw string
+	err := s.DB.QueryRowContext(ctx, `SELECT
+		request_id,session_id,COALESCE(key_id,''),COALESCE(summary,''),COALESCE(response_preview,''),
+		COALESCE(requested_model,''),COALESCE(model,''),COALESCE(outcome,''),COALESCE(status_code,0),
+		COALESCE(started_at,''),COALESCE(completed_at,''),COALESCE(facets_json,'')
+		FROM turn_records WHERE request_id=? LIMIT 1`, id).Scan(
+		&view.RequestID, &view.SessionID, &view.KeyID, &view.Summary, &responsePreview,
+		&view.RequestedModel, &view.Model, &view.Outcome, &view.StatusCode,
+		&startedRaw, &completedRaw, &facetsRaw,
+	)
+	if err != nil {
+		err = s.DB.QueryRowContext(ctx, `SELECT
+			request_id,session_id,COALESCE(key_id,''),COALESCE(summary,''),COALESCE(response_preview,''),
+			COALESCE(requested_model,''),COALESCE(model,''),COALESCE(outcome,''),COALESCE(status_code,0),
+			COALESCE(started_at,''),COALESCE(completed_at,''),COALESCE(facets_json,'')
+			FROM records WHERE request_id=? LIMIT 1`, id).Scan(
+			&view.RequestID, &view.SessionID, &view.KeyID, &view.Summary, &responsePreview,
+			&view.RequestedModel, &view.Model, &view.Outcome, &view.StatusCode,
+			&startedRaw, &completedRaw, &facetsRaw,
+		)
+	}
+	if err != nil {
+		return view, err
+	}
+	view.StartedAt, _ = time.Parse(time.RFC3339Nano, startedRaw)
+	view.CompletedAt, _ = time.Parse(time.RFC3339Nano, completedRaw)
+	view.Facets = map[string][]string{}
+	_ = json.Unmarshal([]byte(facetsRaw), &view.Facets)
+	view.Kind = firstTimelineFacet(view.Facets, "request.kind")
+	if view.Kind == "compact" {
+		view.Kind = "compaction"
+	}
+	if view.Kind == "" {
+		view.Kind = "turn"
+	}
+	if view.Kind == "compaction" {
+		view.Entries = append(view.Entries, TimelineEntry{Role: "compaction"})
+	}
+	names := view.Facets["tool.name"]
+	callIDs := view.Facets["tool.call_id"]
+	for index, name := range names {
+		callID := ""
+		if index < len(callIDs) {
+			callID = callIDs[index]
+		}
+		if callID == "" {
+			callID = "tool-" + strconv.Itoa(index+1)
+		}
+		view.Entries = append(view.Entries, TimelineEntry{Role: "tool_call", Label: name, CallID: callID})
+	}
+	if readableFinalPreview(responsePreview) {
+		view.Entries = append(view.Entries, TimelineEntry{Role: "assistant", Text: cleanTurnText(responsePreview)})
+	}
+	return view, nil
 }
 
 func (s *Store) RequestTimeline(ctx context.Context, id string) (RequestTimelineView, error) {

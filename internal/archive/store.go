@@ -73,6 +73,15 @@ func OpenStore(path string, storeUpstream bool) (*Store, error) {
 	CREATE INDEX IF NOT EXISTS idx_turn_records_session_time ON turn_records(session_id,started_at,id)`); e != nil {
 		return nil, e
 	}
+	if _, e = db.Exec(`CREATE TABLE IF NOT EXISTS turn_texts(
+		session_id TEXT NOT NULL,
+		turn_id TEXT NOT NULL,
+		text_gz BLOB NOT NULL,
+		updated_at TEXT NOT NULL,
+		PRIMARY KEY(session_id,turn_id)
+	)`); e != nil {
+		return nil, e
+	}
 	_, _ = db.Exec(`ALTER TABLE previewed_requests ADD COLUMN version INTEGER NOT NULL DEFAULT 1`)
 	s := &Store{DB: db, DBPath: path, StoreUpstream: storeUpstream}
 	return s, nil

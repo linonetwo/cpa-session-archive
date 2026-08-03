@@ -186,11 +186,63 @@ func TestSessionTurnDetailRehydratesCompleteUserCommand(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if detail.Turn.UserText != fullText {
-		t.Fatalf("detail user text length=%d, want %d", len(detail.Turn.UserText), len(fullText))
+	if strings.Contains(detail.Turn.UserText, "END-OF-COMPLETE-USER-COMMAND") {
+		t.Fatal("turn detail unexpectedly expanded the full CAS payload")
 	}
-	if !strings.HasSuffix(detail.Turn.UserText, "END-OF-COMPLETE-USER-COMMAND") {
-		t.Fatal("detail did not preserve the end of the complete user command")
+	built, err := store.BuildTurnText(context.Background(), "long-session", "long-turn")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if built != fullText {
+		t.Fatalf("lazy full text length=%d, want %d", len(built), len(fullText))
+	}
+	if err = store.SaveTurnText(context.Background(), "long-session", "long-turn", built); err != nil {
+		t.Fatal(err)
+	}
+	cached, found, err := store.CachedTurnText(context.Background(), "long-session", "long-turn")
+	if err != nil || !found || cached != fullText {
+		t.Fatalf("cached found=%v err=%v length=%d", found, err, len(cached))
+	}
+}
+
+func TestSessionTurnDetailUsesLightweightTimelineProjection(t *testing.T) {
+	store, err := OpenStore(filepath.Join(t.TempDir(), "archive.sqlite"), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.DB.Close()
+	now := time.Now()
+	record := Record{
+		RequestID:       "projected-request",
+		SessionID:       "projected-session",
+		Summary:         "Run the projected tool",
+		ResponsePreview: "Projected assistant response",
+		OriginalRequest: []byte(`{"input":[{"role":"user","content":"large payload"}]}`),
+		StartedAt:       now,
+		CompletedAt:     now,
+		Facets: map[string][]string{
+			"turn.id":     {"projected-turn"},
+			"tool.name":   {"shell"},
+			"tool.call_id": {"call-1"},
+		},
+	}
+	if err = store.PutBatch([]Record{record}); err != nil {
+		t.Fatal(err)
+	}
+	// A missing CAS payload must not affect the intermediate-process page.
+	if _, err = store.DB.Exec(`UPDATE records SET original_ref='sha256:missing' WHERE request_id=?`, record.RequestID); err != nil {
+		t.Fatal(err)
+	}
+	detail, err := store.SessionTurnDetail(context.Background(), record.SessionID, "projected-turn", 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(detail.Records) != 1 {
+		t.Fatalf("records=%d", len(detail.Records))
+	}
+	entries := detail.Records[0].Entries
+	if len(entries) != 2 || entries[0].Role != "tool_call" || entries[0].CallID != "call-1" || entries[1].Text != "Projected assistant response" {
+		t.Fatalf("entries=%+v", entries)
 	}
 }
 
