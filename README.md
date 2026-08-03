@@ -35,7 +35,7 @@ instead of being silently discarded.
 ## Build
 
 ~~~bash
-docker build -t cpa-session-archive:0.7.3 .
+docker build -t cpa-session-archive:0.7.4 .
 ~~~
 
 The image contains both /plugin/cpa-session-archive.so and the collector executable.
