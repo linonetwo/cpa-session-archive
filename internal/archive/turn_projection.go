@@ -55,6 +55,15 @@ func (s *Store) BackfillTurnProjection(ctx context.Context, batchSize int, pause
 }
 
 func (s *Store) backfillTurnSession(ctx context.Context, sessionID string, batchSize int, pause time.Duration) error {
+	var projected, total int
+	if err := s.DB.QueryRowContext(ctx, `SELECT
+		(SELECT COUNT(*) FROM turn_records WHERE session_id=?),
+		(SELECT COUNT(*) FROM records WHERE session_id=?)`, sessionID, sessionID).Scan(&projected, &total); err != nil {
+		return err
+	}
+	if projected == total {
+		return nil
+	}
 	var lastStarted string
 	var lastID int64
 	for {
