@@ -41,6 +41,40 @@ func TestSessionTurnPageGroupsCodexByTurnID(t *testing.T) {
 	}
 }
 
+func TestSessionTurnPageUsesCoveringProjectionIndex(t *testing.T) {
+	store, err := OpenStore(filepath.Join(t.TempDir(), "archive.sqlite"), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.DB.Close()
+
+	rows, err := store.DB.Query(`EXPLAIN QUERY PLAN
+		SELECT request_id,COALESCE(key_id,''),COALESCE(summary,''),COALESCE(response_preview,''),
+			COALESCE(requested_model,''),COALESCE(model,''),COALESCE(outcome,''),status_code,
+			started_at,completed_at,COALESCE(facets_json,'')
+		FROM records WHERE session_id=? ORDER BY started_at,id`, "session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+
+	var plan strings.Builder
+	for rows.Next() {
+		var id, parent, unused int
+		var detail string
+		if err = rows.Scan(&id, &parent, &unused, &detail); err != nil {
+			t.Fatal(err)
+		}
+		plan.WriteString(detail)
+	}
+	if err = rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(plan.String(), "COVERING INDEX idx_records_turn_projection") {
+		t.Fatalf("query plan does not use turn projection index: %s", plan.String())
+	}
+}
+
 func TestSessionTurnPageInfersKimiTurnsFromSummaryRuns(t *testing.T) {
 	store, err := OpenStore(filepath.Join(t.TempDir(), "archive.sqlite"), false)
 	if err != nil {

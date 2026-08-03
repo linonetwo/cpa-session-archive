@@ -55,6 +55,14 @@ func OpenStore(path string, storeUpstream bool) (*Store, error) {
 	for _, q := range []string{"ALTER TABLE records ADD COLUMN original_ref TEXT", "ALTER TABLE records ADD COLUMN upstream_ref TEXT", "ALTER TABLE records ADD COLUMN response_ref TEXT", "ALTER TABLE records ADD COLUMN facets_json TEXT", "ALTER TABLE records ADD COLUMN summary TEXT", "ALTER TABLE records ADD COLUMN response_preview TEXT"} {
 		_, _ = db.Exec(q)
 	}
+	// Keep the session turn browser off the wide records table. Historical
+	// databases may still have large inline request/response BLOBs, so even a
+	// session_id index can require thousands of expensive table lookups on
+	// network-backed storage. This covering index contains exactly the compact
+	// projection used to assemble turns.
+	if _, e = db.Exec(`CREATE INDEX IF NOT EXISTS idx_records_turn_projection ON records(session_id,started_at,id,request_id,key_id,summary,response_preview,requested_model,model,outcome,status_code,completed_at,facets_json)`); e != nil {
+		return nil, e
+	}
 	_, _ = db.Exec(`ALTER TABLE previewed_requests ADD COLUMN version INTEGER NOT NULL DEFAULT 1`)
 	s := &Store{DB: db, DBPath: path, StoreUpstream: storeUpstream}
 	return s, nil
