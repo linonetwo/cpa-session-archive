@@ -579,7 +579,11 @@ func decodedPayload(raw []byte) any {
 }
 func (s *Store) Stats(ctx context.Context) (Stats, error) {
 	var x Stats
-	_ = s.DB.QueryRowContext(ctx, `SELECT COUNT(*),COUNT(DISTINCT session_id) FROM records`).Scan(&x.Records, &x.Sessions)
+	// Read counts from the narrow projections maintained in the ingest
+	// transaction. Scanning the payload-heavy records table is needlessly slow
+	// on network-backed volumes after an attach or replica rebuild.
+	_ = s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM session_indexed_requests`).Scan(&x.Records)
+	_ = s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM session_summaries`).Scan(&x.Sessions)
 	_ = s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM blobs`).Scan(&x.Blobs)
 	// Report the storage a user can act on. SUM(LENGTH(data)) scans every large
 	// blob and can block the management page for minutes while legacy rows are

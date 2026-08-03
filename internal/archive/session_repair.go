@@ -12,6 +12,12 @@ type canonicalRepair struct{ requestID, oldID, newID, facets string }
 // transient execution_session_id.  It changes only searchable projections and
 // session_id metadata; CAS payloads are never rewritten.
 func (s *Store) RepairCanonicalSessions(ctx context.Context) (int, error) {
+	const repairVersion = 1
+	var version int
+	_ = s.DB.QueryRowContext(ctx, `SELECT version FROM repair_versions WHERE name='canonical_session'`).Scan(&version)
+	if version >= repairVersion {
+		return 0, nil
+	}
 	rows, err := s.DB.QueryContext(ctx, `SELECT r.request_id,r.session_id,COALESCE(r.facets_json,''),COALESCE(
 		(SELECT value FROM record_facets f WHERE f.request_id=r.request_id AND f.name='thread.id' AND value<>'' LIMIT 1),
 		(SELECT value FROM record_facets f WHERE f.request_id=r.request_id AND f.name='header.thread-id' AND value<>'' LIMIT 1),
@@ -32,7 +38,11 @@ func (s *Store) RepairCanonicalSessions(ctx context.Context) (int, error) {
 			repairs = append(repairs, x)
 		}
 	}
-	if err = rows.Close(); err != nil || len(repairs) == 0 {
+	if err = rows.Close(); err != nil {
+		return 0, err
+	}
+	if len(repairs) == 0 {
+		_, err = s.DB.ExecContext(ctx, `INSERT INTO repair_versions(name,version) VALUES('canonical_session',?) ON CONFLICT(name) DO UPDATE SET version=excluded.version`, repairVersion)
 		return 0, err
 	}
 
@@ -94,6 +104,10 @@ func (s *Store) RepairCanonicalSessions(ctx context.Context) (int, error) {
 		}
 	}
 	if err = tx.Commit(); err != nil {
+		return 0, err
+	}
+	_, err = s.DB.ExecContext(ctx, `INSERT INTO repair_versions(name,version) VALUES('canonical_session',?) ON CONFLICT(name) DO UPDATE SET version=excluded.version`, repairVersion)
+	if err != nil {
 		return 0, err
 	}
 	return len(repairs), nil

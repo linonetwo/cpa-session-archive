@@ -147,6 +147,14 @@ func TestRepairCanonicalSessionsMergesTransientExecutions(t *testing.T) {
 	if executions != 2 {
 		t.Fatalf("execution facets=%d", executions)
 	}
+	var version int
+	if err = store.DB.QueryRow(`SELECT version FROM repair_versions WHERE name='canonical_session'`).Scan(&version); err != nil || version != 1 {
+		t.Fatalf("canonical repair version=%d err=%v", version, err)
+	}
+	changed, err = store.RepairCanonicalSessions(context.Background())
+	if err != nil || changed != 0 {
+		t.Fatalf("completed repair reran: changed=%d err=%v", changed, err)
+	}
 }
 
 func TestRepairRecordPreviewsResumesByExtractorVersion(t *testing.T) {
