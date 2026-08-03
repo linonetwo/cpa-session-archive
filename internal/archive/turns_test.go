@@ -41,18 +41,46 @@ func TestSessionTurnPageGroupsCodexByTurnID(t *testing.T) {
 	}
 }
 
-func TestSessionTurnPageUsesCoveringProjectionIndex(t *testing.T) {
+func TestSessionTurnProjectionBackfillsLegacyRecords(t *testing.T) {
 	store, err := OpenStore(filepath.Join(t.TempDir(), "archive.sqlite"), false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer store.DB.Close()
+	now := time.Now()
+	records := []Record{
+		{RequestID: "legacy-1", SessionID: "legacy-session", Summary: "First command", ResponsePreview: "First answer", StartedAt: now, CompletedAt: now},
+		{RequestID: "legacy-2", SessionID: "legacy-session", Summary: "Second command", ResponsePreview: "Second answer", StartedAt: now.Add(time.Second), CompletedAt: now.Add(time.Second)},
+	}
+	if err = store.PutBatch(records); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.DB.Exec(`DELETE FROM turn_records`); err != nil {
+		t.Fatal(err)
+	}
+	if err = store.BackfillTurnProjection(context.Background(), 1, 0); err != nil {
+		t.Fatal(err)
+	}
+	var projected int
+	if err = store.DB.QueryRow(`SELECT COUNT(*) FROM turn_records WHERE session_id='legacy-session'`).Scan(&projected); err != nil {
+		t.Fatal(err)
+	}
+	if projected != len(records) {
+		t.Fatalf("projected=%d, want %d", projected, len(records))
+	}
+	page, err := store.SessionTurnPage(context.Background(), "legacy-session", 20, 0, "asc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Total != 2 || page.Turns[0].UserText != "First command" || page.Turns[1].FinalText != "Second answer" {
+		t.Fatalf("page=%+v", page)
+	}
 
 	rows, err := store.DB.Query(`EXPLAIN QUERY PLAN
 		SELECT request_id,COALESCE(key_id,''),COALESCE(summary,''),COALESCE(response_preview,''),
 			COALESCE(requested_model,''),COALESCE(model,''),COALESCE(outcome,''),status_code,
 			started_at,completed_at,COALESCE(facets_json,'')
-		FROM records WHERE session_id=? ORDER BY started_at,id`, "session")
+		FROM turn_records WHERE session_id=? ORDER BY started_at,id`, "legacy-session")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,8 +98,8 @@ func TestSessionTurnPageUsesCoveringProjectionIndex(t *testing.T) {
 	if err = rows.Err(); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(plan.String(), "COVERING INDEX idx_records_turn_projection") {
-		t.Fatalf("query plan does not use turn projection index: %s", plan.String())
+	if !strings.Contains(plan.String(), "INDEX idx_turn_records_session_time") {
+		t.Fatalf("query plan does not use turn session index: %s", plan.String())
 	}
 }
 

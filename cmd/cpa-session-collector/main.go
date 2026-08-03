@@ -95,6 +95,20 @@ func main() {
 			}
 		}
 	}()
+	if env("ARCHIVE_BACKFILL_TURN_PROJECTION", "true") == "true" {
+		go func() {
+			time.Sleep(2 * time.Second)
+			for {
+				if err := st.BackfillTurnProjection(context.Background(), 64, 25*time.Millisecond); err != nil {
+					log.Printf("turn projection backfill will retry: %v", err)
+					time.Sleep(5 * time.Second)
+					continue
+				}
+				log.Printf("turn projection backfill complete")
+				break
+			}
+		}()
+	}
 	s := &server{s: st, q: make(chan archive.Record, 4096), tickets: map[string]exportTicket{}}
 	go s.writer()
 	http.HandleFunc("/healthz", s.health)

@@ -144,7 +144,14 @@ func (s *Store) fullTurnUserText(ctx context.Context, group turnGroup) string {
 }
 
 func (s *Store) sessionTurnGroups(ctx context.Context, sessionID string) ([]turnGroup, error) {
-	rows, err := s.DB.QueryContext(ctx, `SELECT request_id,COALESCE(key_id,''),COALESCE(summary,''),COALESCE(response_preview,''),COALESCE(requested_model,''),COALESCE(model,''),COALESCE(outcome,''),status_code,started_at,completed_at,COALESCE(facets_json,'') FROM records WHERE session_id=? ORDER BY started_at,id`, sessionID)
+	table := "records"
+	var projected, total int
+	if err := s.DB.QueryRowContext(ctx, `SELECT
+		(SELECT COUNT(*) FROM turn_records WHERE session_id=?),
+		(SELECT COUNT(*) FROM records WHERE session_id=?)`, sessionID, sessionID).Scan(&projected, &total); err == nil && total > 0 && projected == total {
+		table = "turn_records"
+	}
+	rows, err := s.DB.QueryContext(ctx, `SELECT request_id,COALESCE(key_id,''),COALESCE(summary,''),COALESCE(response_preview,''),COALESCE(requested_model,''),COALESCE(model,''),COALESCE(outcome,''),status_code,started_at,completed_at,COALESCE(facets_json,'') FROM `+table+` WHERE session_id=? ORDER BY started_at,id`, sessionID)
 	if err != nil {
 		return nil, err
 	}

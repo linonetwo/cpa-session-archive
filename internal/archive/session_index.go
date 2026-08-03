@@ -305,6 +305,10 @@ func (s *Store) RepairRecordPreviews(ctx context.Context) error {
 				tx.Rollback()
 				return err
 			}
+			if _, err = tx.Exec(`UPDATE turn_records SET summary=CASE WHEN ?<>'' THEN ? ELSE summary END,response_preview=CASE WHEN ?<>'' THEN ? ELSE response_preview END,facets_json=? WHERE request_id=?`, summary, summary, responsePreview, responsePreview, facetsJSON(facets), item.requestID); err != nil {
+				tx.Rollback()
+				return err
+			}
 			if threadSource != "" {
 				if _, err = tx.Exec(`INSERT OR IGNORE INTO record_facets(request_id,name,value) VALUES(?,'thread.source',?)`, item.requestID, threadSource); err != nil {
 					tx.Rollback()

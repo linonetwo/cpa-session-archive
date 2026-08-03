@@ -61,6 +61,9 @@ func (s *Store) RepairCanonicalSessions(ctx context.Context) (int, error) {
 		if _, err = tx.ExecContext(ctx, `UPDATE records SET session_id=?,facets_json=? WHERE request_id=?`, x.newID, facetsJSON(facets), x.requestID); err != nil {
 			return 0, err
 		}
+		if _, err = tx.ExecContext(ctx, `UPDATE turn_records SET session_id=?,facets_json=? WHERE request_id=?`, x.newID, facetsJSON(facets), x.requestID); err != nil {
+			return 0, err
+		}
 		if _, err = tx.ExecContext(ctx, `DELETE FROM record_facets WHERE request_id=? AND name='session.id'`, x.requestID); err != nil {
 			return 0, err
 		}

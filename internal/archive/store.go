@@ -55,12 +55,22 @@ func OpenStore(path string, storeUpstream bool) (*Store, error) {
 	for _, q := range []string{"ALTER TABLE records ADD COLUMN original_ref TEXT", "ALTER TABLE records ADD COLUMN upstream_ref TEXT", "ALTER TABLE records ADD COLUMN response_ref TEXT", "ALTER TABLE records ADD COLUMN facets_json TEXT", "ALTER TABLE records ADD COLUMN summary TEXT", "ALTER TABLE records ADD COLUMN response_preview TEXT"} {
 		_, _ = db.Exec(q)
 	}
-	// Keep the session turn browser off the wide records table. Historical
-	// databases may still have large inline request/response BLOBs, so even a
-	// session_id index can require thousands of expensive table lookups on
-	// network-backed storage. This covering index contains exactly the compact
-	// projection used to assemble turns.
-	if _, e = db.Exec(`CREATE INDEX IF NOT EXISTS idx_records_turn_projection ON records(session_id,started_at,id,request_id,key_id,summary,response_preview,requested_model,model,outcome,status_code,completed_at,facets_json)`); e != nil {
+	if _, e = db.Exec(`CREATE TABLE IF NOT EXISTS turn_records(
+		id INTEGER PRIMARY KEY,
+		request_id TEXT NOT NULL UNIQUE,
+		session_id TEXT NOT NULL,
+		key_id TEXT,
+		summary TEXT,
+		response_preview TEXT,
+		requested_model TEXT,
+		model TEXT,
+		outcome TEXT,
+		status_code INTEGER,
+		started_at TEXT,
+		completed_at TEXT,
+		facets_json TEXT
+	);
+	CREATE INDEX IF NOT EXISTS idx_turn_records_session_time ON turn_records(session_id,started_at,id)`); e != nil {
 		return nil, e
 	}
 	_, _ = db.Exec(`ALTER TABLE previewed_requests ADD COLUMN version INTEGER NOT NULL DEFAULT 1`)
@@ -124,6 +134,17 @@ func (s *Store) PutBatch(batch []Record) error {
 		return e
 	}
 	defer st.Close()
+	turnSt, e := tx.Prepare(`INSERT INTO turn_records(id,request_id,session_id,key_id,summary,response_preview,requested_model,model,outcome,status_code,started_at,completed_at,facets_json)
+		SELECT id,request_id,session_id,key_id,summary,response_preview,requested_model,model,outcome,status_code,started_at,completed_at,facets_json
+		FROM records WHERE request_id=?
+		ON CONFLICT(request_id) DO UPDATE SET
+			session_id=excluded.session_id,key_id=excluded.key_id,summary=excluded.summary,response_preview=excluded.response_preview,
+			requested_model=excluded.requested_model,model=excluded.model,outcome=excluded.outcome,status_code=excluded.status_code,
+			started_at=excluded.started_at,completed_at=excluded.completed_at,facets_json=excluded.facets_json`)
+	if e != nil {
+		return e
+	}
+	defer turnSt.Close()
 	for _, r := range batch {
 		orig, e := putPayload(tx, r.OriginalRequest)
 		if e != nil {
@@ -142,6 +163,9 @@ func (s *Store) PutBatch(batch []Record) error {
 		}
 		m, _ := json.Marshal(r.Metadata)
 		if _, e = st.Exec(r.RequestID, r.TraceID, r.SessionID, r.KeyID, r.Summary, r.ResponsePreview, r.SourceFormat, r.RequestedModel, r.Model, r.Stream, r.Outcome, r.StatusCode, r.Error, r.StartedAt.Format(time.RFC3339Nano), r.CompletedAt.Format(time.RFC3339Nano), r.ParentResponseID, r.ResponseID, orig, up, resp, r.Truncated, string(m), facetsJSON(r.Facets)); e != nil {
+			return e
+		}
+		if _, e = turnSt.Exec(r.RequestID); e != nil {
 			return e
 		}
 		if _, e = tx.Exec(`DELETE FROM record_facets WHERE request_id=?`, r.RequestID); e != nil {
