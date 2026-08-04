@@ -1,6 +1,8 @@
 package archive
 
 import (
+	"crypto/sha256"
+	"fmt"
 	"net/http"
 	"testing"
 )
@@ -90,6 +92,15 @@ func TestCompletionFacetsRetainCallerScopeAsFallback(t *testing.T) {
 	addCompletionFacets(&rec)
 	if !containsFacet(rec.Facets["caller.scope"], "salted-host-scope") {
 		t.Fatalf("caller scope fallback missing: %#v", rec.Facets)
+	}
+}
+
+func TestNativeKeyHashUsesAuthorizationWithoutPersistingSecret(t *testing.T) {
+	headers := http.Header{}
+	headers.Set("Authorization", "Bearer native-secret")
+	want := fmt.Sprintf("%x", sha256.Sum256([]byte("native-secret")))
+	if got := nativeKeyHash(headers); got != want {
+		t.Fatalf("nativeKeyHash=%q want=%q", got, want)
 	}
 }
 

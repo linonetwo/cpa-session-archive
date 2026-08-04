@@ -3,6 +3,7 @@ package archive
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -188,7 +189,16 @@ func (p *Plugin) captureRequest(r intercept, afterAuth bool) {
 	}
 	s.SessionID = sessionID(&s.Record, r.Metadata, s.OriginalRequest, s.UpstreamRequest)
 	s.ParentResponseID = firstJSON(s.OriginalRequest, s.UpstreamRequest, "previous_response_id")
-	s.KeyID = archiveKeyID(r.Metadata)
+	keyID := archiveKeyID(r.Metadata)
+	if headerKeyID := nativeKeyHash(r.Headers); headerKeyID != "" {
+		keyID = headerKeyID
+	}
+	// The post-auth hook may no longer carry the Authorization header and its
+	// metadata can contain only the host-salted caller_scope. Never downgrade a
+	// native identity captured by the initial request hook.
+	if s.KeyID == "" || keyID != findString(r.Metadata, "caller_scope") {
+		s.KeyID = keyID
+	}
 }
 func (p *Plugin) captureResponse(r intercept) {
 	p.mu.Lock()
@@ -885,6 +895,21 @@ func archiveKeyID(metadata map[string]any) string {
 		findString(metadata, "principal"),
 		findString(metadata, "caller_scope"),
 	)
+}
+
+func nativeKeyHash(headers http.Header) string {
+	raw := strings.TrimSpace(headers.Get("Authorization"))
+	if strings.HasPrefix(strings.ToLower(raw), "bearer ") {
+		raw = strings.TrimSpace(raw[len("bearer "):])
+	}
+	if raw == "" {
+		raw = strings.TrimSpace(headers.Get("X-API-Key"))
+	}
+	if raw == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(raw))
+	return fmt.Sprintf("%x", sum)
 }
 
 func sanitizeMeta(m map[string]any) map[string]any {
