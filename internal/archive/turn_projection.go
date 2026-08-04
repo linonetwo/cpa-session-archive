@@ -4,8 +4,16 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"strings"
 	"time"
 )
+
+type turnFacetProjectionItem struct {
+	id     int64
+	turnID string
+	tools  string
+	kinds  string
+}
 
 type turnProjectionRecord struct {
 	id              int64
@@ -40,13 +48,7 @@ func (s *Store) BackfillTurnFacetProjection(ctx context.Context, batchSize int, 
 		if err != nil {
 			return err
 		}
-		type item struct {
-			id      int64
-			turnID  string
-			tools   string
-			kinds   string
-		}
-		batch := make([]item, 0, batchSize)
+		batch := make([]turnFacetProjectionItem, 0, batchSize)
 		for rows.Next() {
 			var id int64
 			var raw string
@@ -57,7 +59,7 @@ func (s *Store) BackfillTurnFacetProjection(ctx context.Context, batchSize int, 
 			facets := map[string][]string{}
 			_ = json.Unmarshal([]byte(raw), &facets)
 			turnID, tools, kinds := compactTurnFacets(facets)
-			batch = append(batch, item{id: id, turnID: turnID, tools: tools, kinds: kinds})
+			batch = append(batch, turnFacetProjectionItem{id: id, turnID: turnID, tools: tools, kinds: kinds})
 		}
 		if err = rows.Close(); err != nil {
 			return err
@@ -65,28 +67,7 @@ func (s *Store) BackfillTurnFacetProjection(ctx context.Context, batchSize int, 
 		if len(batch) == 0 {
 			return nil
 		}
-		tx, err := s.DB.BeginTx(ctx, nil)
-		if err != nil {
-			return err
-		}
-		stmt, err := tx.PrepareContext(ctx, `UPDATE turn_records
-			SET turn_id=?,tool_names_json=?,request_kinds_json=? WHERE id=?`)
-		if err != nil {
-			tx.Rollback()
-			return err
-		}
-		for _, value := range batch {
-			if _, err = stmt.ExecContext(ctx, value.turnID, value.tools, value.kinds, value.id); err != nil {
-				stmt.Close()
-				tx.Rollback()
-				return err
-			}
-		}
-		if err = stmt.Close(); err != nil {
-			tx.Rollback()
-			return err
-		}
-		if err = tx.Commit(); err != nil {
+		if err = s.writeTurnFacetProjectionBatch(ctx, batch); err != nil {
 			return err
 		}
 		beforeID = batch[len(batch)-1].id
@@ -98,6 +79,61 @@ func (s *Store) BackfillTurnFacetProjection(ctx context.Context, batchSize int, 
 			}
 		}
 	}
+}
+
+func (s *Store) writeTurnFacetProjectionBatch(ctx context.Context, batch []turnFacetProjectionItem) error {
+	var err error
+	for attempt := 0; attempt < 30; attempt++ {
+		err = s.tryWriteTurnFacetProjectionBatch(ctx, batch)
+		if err == nil {
+			return nil
+		}
+		if !isSQLiteBusy(err) {
+			return err
+		}
+		delay := time.Duration(attempt+1) * 50 * time.Millisecond
+		if delay > time.Second {
+			delay = time.Second
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(delay):
+		}
+	}
+	return err
+}
+
+func (s *Store) tryWriteTurnFacetProjectionBatch(ctx context.Context, batch []turnFacetProjectionItem) error {
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	stmt, err := tx.PrepareContext(ctx, `UPDATE turn_records
+		SET turn_id=?,tool_names_json=?,request_kinds_json=? WHERE id=?`)
+	if err != nil {
+		return err
+	}
+	for _, value := range batch {
+		if _, err = stmt.ExecContext(ctx, value.turnID, value.tools, value.kinds, value.id); err != nil {
+			stmt.Close()
+			return err
+		}
+	}
+	if err = stmt.Close(); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func isSQLiteBusy(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "database is locked") ||
+		strings.Contains(message, "database is busy")
 }
 
 // BackfillTurnProjection copies only the compact fields used by the human
