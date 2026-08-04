@@ -188,7 +188,7 @@ func (p *Plugin) captureRequest(r intercept, afterAuth bool) {
 	}
 	s.SessionID = sessionID(&s.Record, r.Metadata, s.OriginalRequest, s.UpstreamRequest)
 	s.ParentResponseID = firstJSON(s.OriginalRequest, s.UpstreamRequest, "previous_response_id")
-	s.KeyID = firstNonEmpty(findString(r.Metadata, "key_name", "key_alias", "principal_name", "key_id", "principal"), findString(r.Metadata, "caller_scope"))
+	s.KeyID = archiveKeyID(r.Metadata)
 }
 func (p *Plugin) captureResponse(r intercept) {
 	p.mu.Lock()
@@ -868,9 +868,22 @@ func firstNonEmpty(v ...string) string {
 	}
 	return ""
 }
+
+// archiveKeyID keeps attribution on the same identity used by CPA Manager Plus
+// and the native access-policy plugin. Host caller_scope is intentionally a
+// different salted fingerprint and remains only a compatibility fallback.
+func archiveKeyID(metadata map[string]any) string {
+	return firstNonEmpty(
+		findString(metadata, "key_name", "key_alias", "principal_name", "key_id"),
+		findString(metadata, "key_hash"),
+		findString(metadata, "principal"),
+		findString(metadata, "caller_scope"),
+	)
+}
+
 func sanitizeMeta(m map[string]any) map[string]any {
 	out := map[string]any{}
-	for _, k := range []string{"key_id", "requested_model", "target_provider", "target_model", "group", "execution_session_id", "derived_session_id", "caller_scope", "request_path", "selected_auth_id"} {
+	for _, k := range []string{"key_id", "key_hash", "requested_model", "target_provider", "target_model", "group", "execution_session_id", "derived_session_id", "caller_scope", "request_path", "selected_auth_id"} {
 		if v := findString(m, k); v != "" {
 			out[k] = v
 		}

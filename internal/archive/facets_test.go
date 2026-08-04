@@ -62,6 +62,20 @@ func TestCompletionFacetsSkipMissingMetadata(t *testing.T) {
 	}
 }
 
+func TestArchiveKeyIDPrefersNativeHashOverCallerScope(t *testing.T) {
+	metadata := map[string]any{
+		"key_hash":     "sha256:native",
+		"caller_scope": "salted-host-scope",
+	}
+	if got := archiveKeyID(metadata); got != "sha256:native" {
+		t.Fatalf("archiveKeyID=%q", got)
+	}
+	sanitized := sanitizeMeta(metadata)
+	if sanitized["key_hash"] != "sha256:native" {
+		t.Fatalf("native key hash missing from sanitized metadata: %#v", sanitized)
+	}
+}
+
 func containsFacet(values []string, wanted string) bool {
 	for _, value := range values {
 		if value == wanted {
