@@ -174,10 +174,15 @@ func (s *Store) fullTurnUserText(ctx context.Context, group turnGroup) string {
 
 func (s *Store) sessionTurnGroups(ctx context.Context, sessionID string) ([]turnGroup, error) {
 	table := "records"
-	var projected, total int
-	if err := s.DB.QueryRowContext(ctx, `SELECT
-		(SELECT COUNT(*) FROM turn_records WHERE session_id=?),
-		(SELECT COUNT(*) FROM records WHERE session_id=?)`, sessionID, sessionID).Scan(&projected, &total); err == nil && total > 0 && projected == total {
+	var projected int
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM turn_records WHERE session_id=?`, sessionID).Scan(&projected); err == nil && projected > 0 {
+		// Prefer the narrow projection as soon as it contains this session.
+		// Active sessions can gain a record between two COUNT queries; requiring
+		// exact equality made a single in-flight row fall back to the wide
+		// records table and forced SQLite to walk pages containing historical
+		// request/response BLOBs. The writer updates turn_records in the same
+		// transaction, so any difference is transient and the next refresh
+		// naturally includes it.
 		table = "turn_records"
 	}
 	rows, err := s.DB.QueryContext(ctx, `SELECT request_id,COALESCE(key_id,''),COALESCE(summary,''),COALESCE(response_preview,''),COALESCE(requested_model,''),COALESCE(model,''),COALESCE(outcome,''),status_code,started_at,completed_at,COALESCE(facets_json,'') FROM `+table+` WHERE session_id=? ORDER BY started_at,id`, sessionID)

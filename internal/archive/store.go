@@ -271,6 +271,7 @@ func (s *Store) Sessions(ctx context.Context, limit int) ([]SessionSummary, erro
 		}
 		x.Kinds = splitProjectionValues(kinds)
 		x.ThreadSources = splitProjectionValues(sources)
+		x.Summary = cleanTurnText(x.Summary)
 		out = append(out, x)
 	}
 	return out, rows.Err()
@@ -306,6 +307,7 @@ func (s *Store) SessionsFiltered(ctx context.Context, limit int, filters map[str
 		}
 		x.Kinds = splitProjectionValues(kinds)
 		x.ThreadSources = splitProjectionValues(sources)
+		x.Summary = cleanTurnText(x.Summary)
 		out = append(out, x)
 	}
 	return out, rows.Err()

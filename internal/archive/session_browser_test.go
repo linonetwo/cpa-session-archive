@@ -72,6 +72,31 @@ func TestSessionsFilteredKeepsNewestSessionsAndFirstSummary(t *testing.T) {
 	}
 }
 
+func TestSessionsDecodeRepeatedHTMLEntitiesForDisplay(t *testing.T) {
+	store, err := OpenStore(filepath.Join(t.TempDir(), "archive.sqlite"), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.DB.Close()
+	now := time.Now()
+	if err = store.PutBatch([]Record{{
+		RequestID:   "encoded",
+		SessionID:   "encoded-session",
+		Summary:     `calibre &amp;#34;library&amp;#34;`,
+		StartedAt:   now,
+		CompletedAt: now,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	sessions, err := store.Sessions(context.Background(), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 1 || sessions[0].Summary != `calibre "library"` {
+		t.Fatalf("sessions=%+v", sessions)
+	}
+}
+
 func TestExtractConversationSummary(t *testing.T) {
 	body := []byte(`{"input":[{"role":"developer","content":[{"type":"input_text","text":"ignore"}]},{"role":"user","content":[{"type":"input_text","text":"  Build   the archive browser  "}]}]}`)
 	if got := extractConversationSummary(body); got != "Build the archive browser" {

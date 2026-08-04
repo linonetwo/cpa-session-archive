@@ -113,6 +113,32 @@ func TestSessionTurnProjectionBackfillsLegacyRecords(t *testing.T) {
 	}
 }
 
+func TestSessionTurnPagePrefersPartialNarrowProjection(t *testing.T) {
+	store, err := OpenStore(filepath.Join(t.TempDir(), "archive.sqlite"), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.DB.Close()
+	now := time.Now()
+	records := []Record{
+		{RequestID: "p1", SessionID: "active", Summary: "First", StartedAt: now, CompletedAt: now},
+		{RequestID: "p2", SessionID: "active", Summary: "Second", StartedAt: now.Add(time.Second), CompletedAt: now.Add(time.Second)},
+	}
+	if err = store.PutBatch(records); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.DB.Exec(`DELETE FROM turn_records WHERE request_id='p2'`); err != nil {
+		t.Fatal(err)
+	}
+	page, err := store.SessionTurnPage(context.Background(), "active", 20, 0, "asc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Total != 1 || len(page.Turns) != 1 || page.Turns[0].UserText != "First" {
+		t.Fatalf("page=%+v", page)
+	}
+}
+
 func TestSessionTurnPageInfersKimiTurnsFromSummaryRuns(t *testing.T) {
 	store, err := OpenStore(filepath.Join(t.TempDir(), "archive.sqlite"), false)
 	if err != nil {
