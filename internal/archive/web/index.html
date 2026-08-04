@@ -162,6 +162,11 @@
         border-left: 4px solid #10b981;
         padding-left: 12px;
       }
+      .placeholder-text {
+        color: #667085;
+        opacity: 0.62;
+        font-style: italic;
+      }
       .process-step {
         border: 1px solid #d9e1ea;
         border-radius: 10px;
@@ -179,6 +184,18 @@
         padding: 12px;
         display: grid;
         gap: 9px;
+      }
+      .process-loading {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        color: #667085;
+        opacity: 0.75;
+      }
+      .process-loading .spinner {
+        width: 18px;
+        height: 18px;
+        border-width: 3px;
       }
       .tool-summary {
         display: flex;
@@ -1031,6 +1048,8 @@
           compactionMarker: "上下文压缩节点",
           toolSummary: "工具调用",
           noReadableContent: "没有可直接阅读的文本内容",
+          expandProcess: "展开后加载完整过程正文",
+          processLoadFailed: "过程正文加载失败，请重试或打开排障详情。",
           attachment: "多媒体附件",
           expandFull: "展开完整内容",
           downloadReady:
@@ -1168,6 +1187,8 @@
           compactionMarker: "Context compaction point",
           toolSummary: "Tool call",
           noReadableContent: "No directly readable text content",
+          expandProcess: "Expand to load the complete process text",
+          processLoadFailed: "Could not load the process text. Retry or open diagnostics.",
           attachment: "Media attachment",
           expandFull: "Expand full content",
           downloadReady:
@@ -1237,6 +1258,7 @@
         turnProcessTotal = 0,
         currentRequestID = "",
         currentRequestRecord = null;
+      var loadedProcessViews = {};
       var detailSeenContent = new Set();
       var fullTexts = {},
         fullTextSequence = 0,
@@ -1503,9 +1525,54 @@
         if (n < 1073741824) return (n / 1048576).toFixed(1) + " MiB";
         return (n / 1073741824).toFixed(1) + " GiB";
       }
+      async function firstManagementJSON(path) {
+        var bases = [location.origin, session.base].filter(
+          function (value, index, all) {
+            return value && all.indexOf(value) === index;
+          },
+        );
+        for (var index = 0; index < bases.length; index++) {
+          try {
+            var response = await fetch(bases[index] + path, {
+              headers: { Authorization: "Bearer " + session.key },
+            });
+            if (response.ok) return await response.json();
+          } catch (ignore) {}
+        }
+        return {};
+      }
+      async function loadKeyMetadata() {
+        var results = await Promise.all([
+          firstManagementJSON("/v0/management/api-key-aliases"),
+          firstManagementJSON(
+            "/v0/management/plugins/cpa-key-policy/identities",
+          ),
+        ]);
+        (results[0].items || []).forEach(function (item) {
+          keyAliases[
+            normalizeKeyHash(item.apiKeyHash || item.api_key_hash)
+          ] = item.alias;
+        });
+        (results[1].identities || []).forEach(function (identity) {
+          var alias =
+            keyAliases[normalizeKeyHash(identity.key_hash)] ||
+            identity.key_preview;
+          if (alias && identity.caller_scope)
+            keyAliases[normalizeKeyHash(identity.caller_scope)] = alias;
+        });
+      }
       async function start() {
         try {
-          var st = await api("/stats");
+          // These independent endpoints previously ran one after another,
+          // making the page wait for several management-proxy round trips
+          // before the first session row appeared.
+          var startup = await Promise.all([
+            api("/stats"),
+            api("/facets"),
+            loadKeyMetadata(),
+          ]);
+          var st = startup[0];
+          facets = startup[1];
           document.getElementById("login").style.display = "none";
           document.getElementById("cards").innerHTML = [
             [t("storageUsed"), fmt(st.compressed_bytes)],
@@ -1522,64 +1589,6 @@
               );
             })
             .join("");
-          var aliasBases = [location.origin, session.base].filter(
-            function (value, index, all) {
-              return value && all.indexOf(value) === index;
-            },
-          );
-          for (
-            var aliasIndex = 0;
-            aliasIndex < aliasBases.length;
-            aliasIndex++
-          ) {
-            try {
-              var aliasResponse = await fetch(
-                aliasBases[aliasIndex] + "/v0/management/api-key-aliases",
-                {
-                  headers: { Authorization: "Bearer " + session.key },
-                },
-              );
-              if (!aliasResponse.ok) continue;
-              var aliases = await aliasResponse.json();
-              (aliases.items || []).forEach(function (item) {
-                keyAliases[
-                  normalizeKeyHash(item.apiKeyHash || item.api_key_hash)
-                ] = item.alias;
-              });
-              break;
-            } catch (ignore) {}
-          }
-          // CPA exposes caller_scope as a deliberately different salted hash.
-          // The native access plugin can relate that hash to the same CPA Key
-          // without exposing the Key itself, so historical and live archive
-          // rows resolve to the CPAMP alias regardless of hook ordering.
-          for (
-            var identityIndex = 0;
-            identityIndex < aliasBases.length;
-            identityIndex++
-          ) {
-            try {
-              var identityResponse = await fetch(
-                aliasBases[identityIndex] +
-                  "/v0/management/plugins/cpa-key-policy/identities",
-                {
-                  headers: { Authorization: "Bearer " + session.key },
-                },
-              );
-              if (!identityResponse.ok) continue;
-              var identityData = await identityResponse.json();
-              (identityData.identities || []).forEach(function (identity) {
-                var alias =
-                  keyAliases[normalizeKeyHash(identity.key_hash)] ||
-                  identity.key_preview;
-                if (alias && identity.caller_scope) {
-                  keyAliases[normalizeKeyHash(identity.caller_scope)] = alias;
-                }
-              });
-              break;
-            } catch (ignore) {}
-          }
-          facets = await api("/facets");
           renderFilters();
           await loadSessions();
           await route();
@@ -1896,6 +1905,7 @@
       }
       function renderTurnSummary(turn, number) {
         var tools = turn.tool_names || [];
+        var hasFinalText = !!turn.final_text;
         var finalText = turn.final_text || t("noFinalAnswer");
         var turnStats = t("turnRequestCount", {
           requests: turn.requests || 0,
@@ -1911,7 +1921,9 @@
           esc(turn.user_text || t("untitled")) +
           '</div></section><section class="turn-final"><h3>' +
           esc(t("finalAnswer")) +
-          '</h3><div class="turn-text">' +
+          '</h3><div class="turn-text' +
+          (hasFinalText ? "" : " placeholder-text") +
+          '">' +
           esc(finalText) +
           '</div></section></div><div class="conversation-meta">#' +
           number +
@@ -1950,6 +1962,7 @@
       async function loadTurnPage(pageNumber) {
         turnProcessPage = Math.max(1, pageNumber || turnProcessPage || 1);
         fullTexts = {};
+        loadedProcessViews = {};
         var offset = (turnProcessPage - 1) * turnProcessPageSize;
         var page = await api(
           "/turns?session_id=" +
@@ -1983,7 +1996,10 @@
           '</section><section class="turn-final"><h3>' +
           esc(t("finalAnswer")) +
           "</h3>" +
-          renderExpandableTurnText(turn.final_text || t("noFinalAnswer")) +
+          renderExpandableTurnText(
+            turn.final_text || t("noFinalAnswer"),
+            !turn.final_text,
+          ) +
           "</section>";
         document.getElementById("turnProcess").innerHTML = (page.records || [])
           .map(function (view, index) {
@@ -2007,6 +2023,40 @@
         window.scrollTo(0, 0);
       }
       function renderTurnProcess(view, number) {
+        var preview = renderTurnProcessBody(view, false);
+        return (
+          '<details class="panel process-step" data-request-id="' +
+          esc(view.request_id) +
+          '" ontoggle="loadTurnProcess(this,decodeURIComponent(\'' +
+          encodeURIComponent(view.request_id) +
+          '\'))"><summary><b>' +
+          esc(t("processStep", { number: number })) +
+          " · " +
+          esc(kindLabel(view.kind)) +
+          '</b><span class="muted">' +
+          esc(
+            [
+              view.requested_model || view.model,
+              localTime(view.started_at),
+              (view.entries || []).filter(function (entry) {
+                return entry.role === "tool_call";
+              }).length
+                ? t("toolSummary") +
+                  " × " +
+                  (view.entries || []).filter(function (entry) {
+                    return entry.role === "tool_call";
+                  }).length
+                : "",
+            ]
+              .filter(Boolean)
+              .join(" · "),
+          ) +
+          '</span></summary><div class="process-step-body">' +
+          preview +
+          "</div></details>"
+        );
+      }
+      function renderTurnProcessBody(view, complete) {
         var readable = [],
           tools = {},
           toolOrder = [];
@@ -2063,33 +2113,57 @@
           })
           .join("");
         var body = readable.join("") + toolHTML;
+        if (!body && !complete)
+          body =
+            '<div class="placeholder-text">' +
+            esc(t("expandProcess")) +
+            "</div>";
         if (!body)
-          body = '<div class="empty">' + esc(t("noReadableContent")) + "</div>";
+          body =
+            '<div class="placeholder-text">' +
+            esc(t("noReadableContent")) +
+            "</div>";
         return (
-          '<details class="panel process-step"><summary><b>' +
-          esc(t("processStep", { number: number })) +
-          " · " +
-          esc(kindLabel(view.kind)) +
-          '</b><span class="muted">' +
-          esc(
-            [
-              view.requested_model || view.model,
-              localTime(view.started_at),
-              toolOrder.length
-                ? t("toolSummary") + " × " + toolOrder.length
-                : "",
-            ]
-              .filter(Boolean)
-              .join(" · "),
-          ) +
-          '</span></summary><div class="process-step-body">' +
           body +
           "<button onclick=\"openTurnRequest(decodeURIComponent('" +
           encodeURIComponent(view.request_id) +
           "'))\">" +
           esc(t("rawDiagnostics")) +
-          "</button></div></details>"
+          "</button>"
         );
+      }
+      async function loadTurnProcess(node, requestID) {
+        if (
+          !node.open ||
+          node.dataset.loaded === "true" ||
+          node.dataset.loaded === "loading"
+        )
+          return;
+        var body = node.querySelector(".process-step-body");
+        if (!body) return;
+        node.dataset.loaded = "loading";
+        body.innerHTML =
+          '<div class="process-loading"><span class="spinner"></span>' +
+          esc(t("loadingRequest")) +
+          "</div>";
+        try {
+          var view =
+            loadedProcessViews[requestID] ||
+            (await api(
+              "/request-view?id=" + encodeURIComponent(requestID),
+              "",
+              sqlTemplates.request,
+            ));
+          loadedProcessViews[requestID] = view;
+          body.innerHTML = renderTurnProcessBody(view, true);
+          node.dataset.loaded = "true";
+        } catch (error) {
+          body.innerHTML =
+            '<div class="placeholder-text">' +
+            esc(t("processLoadFailed")) +
+            "</div>";
+          node.dataset.loaded = "";
+        }
       }
       function openTurnRequest(requestID) {
         location.hash =
@@ -2361,10 +2435,6 @@
           document.getElementById(
             scope === "all" ? "allExportFormat" : "sessionExportFormat",
           ).value || "archive";
-        var popup = null;
-        try {
-          popup = window.open("about:blank", "_blank");
-        } catch (e) {}
         showLoading(t("loadingExport"), sqlTemplates.export);
         try {
           var query = new URLSearchParams({ scope: scope, format: format });
@@ -2390,23 +2460,17 @@
               esc(t("downloadReady")) +
               '</div><a href="' +
               esc(url) +
-              '" target="_blank" rel="noopener">' +
+              '">' +
               esc(ticket.filename || url) +
               "</a>";
             notice.classList.add("open");
           }
-          if (popup) popup.location.replace(url);
-          else {
-            var link = document.createElement("a");
-            link.href = url;
-            link.target = "_blank";
-            link.rel = "noopener";
-            document.body.appendChild(link);
-            link.click();
-            link.remove();
-          }
+          var link = document.createElement("a");
+          link.href = url;
+          document.body.appendChild(link);
+          link.click();
+          link.remove();
         } catch (error) {
-          if (popup) popup.close();
           alert(error.message || error);
         } finally {
           hideLoading();
@@ -2454,12 +2518,13 @@
         fullTexts[id] = text;
         return id;
       }
-      function renderExpandableTurnText(text) {
+      function renderExpandableTurnText(text, placeholder) {
         text = String(text || "");
+        var textClass =
+          "turn-text turn-text-detail" +
+          (placeholder ? " placeholder-text" : "");
         if (text.length <= 1600)
-          return (
-            '<div class="turn-text turn-text-detail">' + esc(text) + "</div>"
-          );
+          return '<div class="' + textClass + '">' + esc(text) + "</div>";
         var id = retainFullText(text);
         return (
           '<div class="turn-text">' +

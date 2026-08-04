@@ -106,6 +106,10 @@ const timeline = {
   system_chars: longSystem.length,
   tool_definitions: 1,
   entries: [
+    {
+      role: "user",
+      text: "<environment_context>mock cwd</environment_context>",
+    },
     { role: "assistant", text: longAssistant, label: "analysis" },
     {
       role: "tool_call",
@@ -118,6 +122,10 @@ const timeline = {
       call_id: "call-long-output",
     },
   ],
+};
+const timelinePreview = {
+  ...timeline,
+  entries: [],
 };
 
 function json(response, value) {
@@ -211,7 +219,7 @@ const server = http.createServer((request, response) => {
         status_code: 200,
         tool_names: ["shell_command"],
       },
-      records: [timeline],
+      records: [timelinePreview],
       total: 41,
       limit: 10,
       offset: Number(url.searchParams.get("offset") || 0),

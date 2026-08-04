@@ -40,6 +40,20 @@ func TestRequestTimelineOnlyShowsNewTurnDelta(t *testing.T) {
 	}
 }
 
+func TestCollectTimelineDecodesEscapedReadableText(t *testing.T) {
+	var entries []TimelineEntry
+	collectTimeline([]any{
+		map[string]any{
+			"type":    "message",
+			"role":    "user",
+			"content": `&amp;lt;environment_context&amp;gt;cwd&amp;lt;/environment_context&amp;gt;`,
+		},
+	}, "user", &entries)
+	if len(entries) != 1 || entries[0].Text != `<environment_context>cwd</environment_context>` {
+		t.Fatalf("entries=%#v", entries)
+	}
+}
+
 func TestRequestTimelineMarksCompaction(t *testing.T) {
 	store, err := OpenStore(filepath.Join(t.TempDir(), "archive.sqlite"), false)
 	if err != nil {

@@ -280,7 +280,7 @@ func normalizeTurnSummary(value string) string {
 }
 
 func cleanTurnText(value string) string {
-	value = strings.TrimSpace(html.UnescapeString(value))
+	value = strings.TrimSpace(unescapeDisplayText(value))
 	lower := strings.ToLower(value)
 	for _, prefix := range []string{"## my request for codex:", "# my request for codex:", "my request for codex:"} {
 		if strings.HasPrefix(lower, prefix) {
@@ -295,6 +295,22 @@ func cleanTurnText(value string) string {
 	}
 	if strings.HasSuffix(lower, "</userrequest>") {
 		value = strings.TrimSpace(value[:len(value)-len("</userRequest>")])
+	}
+	return value
+}
+
+// unescapeDisplayText handles payloads that were HTML-escaped more than once
+// by an upstream client or an intermediate JSON serializer. It returns plain
+// text only; the browser still escapes the result before inserting it into the
+// DOM, so tags such as <environment_context> remain visible rather than being
+// interpreted as markup.
+func unescapeDisplayText(value string) string {
+	for range 4 {
+		next := html.UnescapeString(value)
+		if next == value {
+			break
+		}
+		value = next
 	}
 	return value
 }

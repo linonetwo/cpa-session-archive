@@ -100,47 +100,51 @@ test("system instructions and diagnostics are routed and loaded on demand", asyn
 
 test("session export exposes a reusable server-streamed JSONL download", async ({
   page,
-  request,
 }) => {
   await page.locator("tbody tr").first().click();
-  await page.evaluate(() => {
-    window.__archiveDownloadURL = "";
-    window.open = () => ({
-      close() {},
-      location: {
-        replace(url) {
-          window.__archiveDownloadURL = url;
-        },
-      },
-    });
-  });
+  const sessionDownload = page.waitForEvent("download");
   await page.getByRole("button", { name: "下载当前 Session" }).click();
+  const downloaded = await sessionDownload;
+  expect(downloaded.suggestedFilename()).toBe(
+    "mock-session-long-content.archive.jsonl",
+  );
+  const downloadedPath = await downloaded.path();
+  expect(downloadedPath).toBeTruthy();
+  expect(require("node:fs").statSync(downloadedPath).size).toBeGreaterThan(0);
+  expect(require("node:fs").readFileSync(downloadedPath, "utf8")).toContain(
+    "END-OF-LONG-TOOL-OUTPUT",
+  );
   const link = page.locator("#downloadNotice a");
   await expect(link).toHaveAttribute(
     "href",
     "http://127.0.0.1:4173/archive-api/v1/exports/mock-ticket",
   );
   await expect(link).toHaveText("mock-session-long-content.archive.jsonl");
-  await expect
-    .poll(() => page.evaluate(() => window.__archiveDownloadURL))
-    .toBe(
-      "http://127.0.0.1:4173/archive-api/v1/exports/mock-ticket",
-    );
-
-  const response = await request.get(
-    "http://127.0.0.1:4173/archive-api/v1/exports/mock-ticket",
-  );
-  expect(response.ok()).toBeTruthy();
-  expect(response.headers()["content-disposition"]).toContain(
-    'filename="mock-session-long-content.archive.jsonl"',
-  );
-  expect(await response.text()).toContain("END-OF-LONG-TOOL-OUTPUT");
 
   await page.getByRole("button", { name: /返回会话列表/ }).click();
   await page.locator("#allExportFormat").selectOption("sft");
+  const allDownload = page.waitForEvent("download");
   await page.getByRole("button", { name: "下载全库" }).click();
+  expect((await allDownload).suggestedFilename()).toBe(
+    "mock-session-long-content.archive.jsonl",
+  );
   await expect(page.locator("#allDownloadNotice a")).toHaveText(
     "cpa-session-archive.all.sft.jsonl",
+  );
+});
+
+test("escaped environment context is readable and process content loads lazily", async ({
+  page,
+}) => {
+  await page.locator("tbody tr").first().click();
+  await page.locator(".turn-card").click();
+  const step = page.locator(".process-step").first();
+  await expect(step).toContainText("展开后加载完整过程正文");
+  await step.click();
+  await expect(step).not.toContainText("没有可直接阅读的文本内容");
+  await step.getByRole("button", { name: "原始请求/响应（排障）" }).click();
+  await expect(page.locator("#requestDetail")).toContainText(
+    "<environment_context>mock cwd</environment_context>",
   );
 });
 

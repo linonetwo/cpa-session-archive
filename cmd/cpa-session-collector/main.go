@@ -500,9 +500,17 @@ func (s *server) ticketedExport(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Disposition", `attachment; filename="`+ticket.Filename+`"`)
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("X-Accel-Buffering", "no")
 	if r.Method == http.MethodHead {
 		w.WriteHeader(http.StatusOK)
 		return
+	}
+	// Commit and flush the attachment headers before expanding potentially
+	// large CAS payloads. Browsers can create the destination file immediately
+	// instead of treating a long first-record rehydration as an empty response.
+	w.WriteHeader(http.StatusOK)
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
 	}
 	var e error
 	if ticket.Format == "sft" {

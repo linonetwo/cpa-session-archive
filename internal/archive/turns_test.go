@@ -151,6 +151,14 @@ func TestCleanTurnTextRemovesClientWrappers(t *testing.T) {
 	}
 }
 
+func TestCleanTurnTextDecodesRepeatedHTMLWithoutDroppingVisibleTags(t *testing.T) {
+	input := `&amp;lt;environment_context&amp;gt;&amp;#34;workspace&amp;#34;&amp;lt;/environment_context&amp;gt;`
+	want := `<environment_context>"workspace"</environment_context>`
+	if got := cleanTurnText(input); got != want {
+		t.Fatalf("cleanTurnText(%q)=%q, want %q", input, got, want)
+	}
+}
+
 func TestSessionTurnDetailRehydratesCompleteUserCommand(t *testing.T) {
 	store, err := OpenStore(filepath.Join(t.TempDir(), "archive.sqlite"), false)
 	if err != nil {

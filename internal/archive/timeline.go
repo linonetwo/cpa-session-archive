@@ -237,7 +237,7 @@ func collectTimeline(value any, fallback string, out *[]TimelineEntry) {
 		}
 	case string:
 		if strings.TrimSpace(item) != "" {
-			*out = append(*out, TimelineEntry{Role: fallback, Text: item})
+			*out = append(*out, TimelineEntry{Role: fallback, Text: unescapeDisplayText(item)})
 		}
 	case map[string]any:
 		typeName := strings.ToLower(stringValue(item["type"]))
@@ -290,7 +290,7 @@ func contentValue(value any) string {
 	case nil:
 		return ""
 	case string:
-		return item
+		return unescapeDisplayText(item)
 	case []any:
 		parts := make([]string, 0, len(item))
 		for _, child := range item {

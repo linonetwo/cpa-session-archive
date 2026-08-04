@@ -22,6 +22,9 @@ func TestExportTicketHeadIsReusableWithoutStreamingDatabase(t *testing.T) {
 		if !strings.Contains(response.Header().Get("Content-Disposition"), "session.jsonl") {
 			t.Fatalf("disposition=%q", response.Header().Get("Content-Disposition"))
 		}
+		if response.Header().Get("X-Accel-Buffering") != "no" {
+			t.Fatalf("buffering header=%q", response.Header().Get("X-Accel-Buffering"))
+		}
 		if response.Body.Len() != 0 {
 			t.Fatalf("HEAD streamed %d bytes", response.Body.Len())
 		}
