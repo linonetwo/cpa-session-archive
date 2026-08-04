@@ -74,7 +74,7 @@ const requestRecord = {
   request_id: requestID,
   session_id: sessionID,
   key_id: "sha256:mock-key-hash",
-  summary: longUser.slice(0, 160) + "…",
+  summary: escapedEnvironment,
   response_preview: longAssistant.slice(0, 160) + "…",
   requested_model: "gpt-5.6-sol",
   model: "gpt-5.6-sol",

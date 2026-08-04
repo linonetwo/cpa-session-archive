@@ -2300,8 +2300,9 @@
           sqlTemplates.request,
         );
         currentRequestRecord = null;
-        document.getElementById("requestTitle").textContent =
-          view.summary || view.requested_model || view.model || t("request");
+        document.getElementById("requestTitle").textContent = displayText(
+          view.summary || view.requested_model || view.model || t("request"),
+        );
         document.getElementById("requestMeta").textContent = [
           keyName(view.key_id),
           view.requested_model || view.model,
@@ -2798,8 +2799,9 @@
         }
         var pretty = part === "instructions" ? text : prettyPayload(text);
         showSubDetail();
-        document.getElementById("subDetailTitle").textContent =
-          labels[part] || t("rawDiagnostics");
+        document.getElementById("subDetailTitle").textContent = displayText(
+          labels[part] || t("rawDiagnostics"),
+        );
         document.getElementById("subDetailMeta").textContent =
           t("bytes", { count: new Blob([text]).size }) + " · " + requestID;
         var id = retainFullText(pretty);
@@ -2847,8 +2849,9 @@
           if (matched) entry = matched;
         }
         showSubDetail();
-        document.getElementById("subDetailTitle").textContent =
-          (entry && entry.name) || t("toolCallsAndResults");
+        document.getElementById("subDetailTitle").textContent = displayText(
+          (entry && entry.name) || t("toolCallsAndResults"),
+        );
         document.getElementById("subDetailMeta").textContent =
           (entry && entry.callID) || requestID;
         if (!entry) {

@@ -149,6 +149,9 @@ test("escaped environment context is readable and process content loads lazily",
   await step.click();
   await expect(step).not.toContainText("没有可直接阅读的文本内容");
   await step.getByRole("button", { name: "原始请求/响应（排障）" }).click();
+  await expect(page.locator("#requestTitle")).toContainText(
+    "<environment_context>mock cwd</environment_context>",
+  );
   await expect(page.locator("#requestDetail")).toContainText(
     "<environment_context>mock cwd</environment_context>",
   );
