@@ -74,6 +74,23 @@ func TestArchiveKeyIDPrefersNativeHashOverCallerScope(t *testing.T) {
 	if sanitized["key_hash"] != "sha256:native" {
 		t.Fatalf("native key hash missing from sanitized metadata: %#v", sanitized)
 	}
+	rec := Record{KeyID: archiveKeyID(metadata), Metadata: metadata}
+	addCompletionFacets(&rec)
+	if containsFacet(rec.Facets["caller.scope"], "salted-host-scope") {
+		t.Fatalf("salted caller scope duplicated native identity: %#v", rec.Facets)
+	}
+	if !containsFacet(rec.Facets["key.id"], "sha256:native") {
+		t.Fatalf("native key identity missing: %#v", rec.Facets)
+	}
+}
+
+func TestCompletionFacetsRetainCallerScopeAsFallback(t *testing.T) {
+	metadata := map[string]any{"caller_scope": "salted-host-scope"}
+	rec := Record{KeyID: archiveKeyID(metadata), Metadata: metadata}
+	addCompletionFacets(&rec)
+	if !containsFacet(rec.Facets["caller.scope"], "salted-host-scope") {
+		t.Fatalf("caller scope fallback missing: %#v", rec.Facets)
+	}
 }
 
 func containsFacet(values []string, wanted string) bool {

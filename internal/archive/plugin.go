@@ -344,7 +344,13 @@ func addCompletionFacets(rec *Record) {
 		add("model.target", findString(rec.Metadata, "target_model"))
 		add("auth.group", findString(rec.Metadata, "group"))
 		add("auth.id", findString(rec.Metadata, "selected_auth_id"))
-		add("caller.scope", findString(rec.Metadata, "caller_scope"))
+		// caller_scope is a host-salted compatibility identity. Once CPA has
+		// supplied a native Key identity, indexing both would make one caller
+		// appear twice and the salted value cannot be resolved to a CPAMP alias.
+		callerScope := findString(rec.Metadata, "caller_scope")
+		if callerScope == rec.KeyID {
+			add("caller.scope", callerScope)
+		}
 		add("request.path", findString(rec.Metadata, "request_path"))
 	}
 	rec.Facets["stream"] = []string{fmt.Sprint(rec.Stream)}
