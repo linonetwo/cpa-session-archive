@@ -1549,6 +1549,36 @@
               break;
             } catch (ignore) {}
           }
+          // CPA exposes caller_scope as a deliberately different salted hash.
+          // The native access plugin can relate that hash to the same CPA Key
+          // without exposing the Key itself, so historical and live archive
+          // rows resolve to the CPAMP alias regardless of hook ordering.
+          for (
+            var identityIndex = 0;
+            identityIndex < aliasBases.length;
+            identityIndex++
+          ) {
+            try {
+              var identityResponse = await fetch(
+                aliasBases[identityIndex] +
+                  "/v0/management/plugins/cpa-key-policy/identities",
+                {
+                  headers: { Authorization: "Bearer " + session.key },
+                },
+              );
+              if (!identityResponse.ok) continue;
+              var identityData = await identityResponse.json();
+              (identityData.identities || []).forEach(function (identity) {
+                var alias =
+                  keyAliases[normalizeKeyHash(identity.key_hash)] ||
+                  identity.key_preview;
+                if (alias && identity.caller_scope) {
+                  keyAliases[normalizeKeyHash(identity.caller_scope)] = alias;
+                }
+              });
+              break;
+            } catch (ignore) {}
+          }
           facets = await api("/facets");
           renderFilters();
           await loadSessions();
