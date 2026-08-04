@@ -8,6 +8,10 @@ const page = fs.readFileSync(
 const sessionID = "mock-session-long-content";
 const turnID = "mock-turn-long-content";
 const requestID = "mock-request-long-content";
+const escapedSummary =
+  "calibre 路径 &amp;#34;C:\\Books&amp;#34; 应显示为正常引号";
+const escapedEnvironment =
+  "&amp;lt;environment_context&amp;gt;mock cwd&amp;lt;/environment_context&amp;gt;";
 const longUser =
   "You are an expert at upholding safety and compliance standards for Codex ambient suggestions. " +
   "用户要求：详情页必须能够读取完整命令，列表可以只显示摘要。" +
@@ -185,7 +189,7 @@ const server = http.createServer((request, response) => {
     return json(response, [
       {
         session_id: sessionID,
-        summary: longUser.slice(0, 160) + "…",
+        summary: escapedSummary,
         project: "mock-long-project",
         key_id: "sha256:mock-key-hash",
         model: "gpt-5.6-sol",
@@ -231,7 +235,7 @@ const server = http.createServer((request, response) => {
         {
           turn_id: turnID,
           session_id: sessionID,
-          user_text: longUser.slice(0, 160) + "…",
+          user_text: escapedEnvironment,
           final_text: longAssistant.slice(0, 160) + "…",
           requests: 23,
           first_at: "2026-08-03T12:34:56+08:00",

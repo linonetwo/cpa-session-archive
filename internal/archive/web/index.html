@@ -1827,8 +1827,9 @@
         detailRecords = [];
         detailSeenContent = new Set();
         document.getElementById("detail").innerHTML = "";
-        document.getElementById("detailTitle").textContent =
-          selected.summary || selected.project || t("untitled");
+        document.getElementById("detailTitle").textContent = displayText(
+          selected.summary || selected.project || t("untitled"),
+        );
         document.getElementById("detailMeta").textContent = [
           keyName(selected.key_id),
           selected.last_at && localTime(selected.last_at),
@@ -1866,11 +1867,12 @@
         if (detailRecords[0]) {
           var first = detailRecords[0];
           var selected = sessionsByID[detailSessionID] || {};
-          document.getElementById("detailTitle").textContent =
+          document.getElementById("detailTitle").textContent = displayText(
             selected.summary ||
-            first.user_text ||
-            selected.project ||
-            t("untitled");
+              first.user_text ||
+              selected.project ||
+              t("untitled"),
+          );
           document.getElementById("detailMeta").textContent =
             keyName(first.key_id || selected.key_id) +
             " · " +
@@ -1978,7 +1980,7 @@
         );
         var turn = page.turn || {};
         turnProcessTotal = page.total || 0;
-        var titleText = turn.user_text || t("untitled");
+        var titleText = displayText(turn.user_text || t("untitled"));
         document.getElementById("turnTitle").textContent =
           titleText.length > 180 ? titleText.slice(0, 180) + "…" : titleText;
         document.getElementById("turnMeta").textContent = [
@@ -2561,7 +2563,7 @@
                 encodeURIComponent(currentTurnID),
             );
             if (result.status === "ok") {
-              target.textContent = result.text || "";
+              target.textContent = displayText(result.text || "");
               target.style.display = "block";
               button.remove();
               return;
@@ -2580,7 +2582,7 @@
       }
       function expandFullText(id, button) {
         var target = button.nextElementSibling;
-        target.textContent = fullTexts[id] || "";
+        target.textContent = displayText(fullTexts[id] || "");
         target.style.display = "block";
         button.remove();
         delete fullTexts[id];
@@ -2906,7 +2908,7 @@
       }
       function expandDiagnostic(id, button) {
         var pre = button.previousElementSibling;
-        pre.textContent = fullTexts[id] || "";
+        pre.textContent = displayText(fullTexts[id] || "");
         button.remove();
       }
       async function copyFullText(id, button) {
@@ -3309,8 +3311,19 @@
         currentTurnID = "";
         document.getElementById("listView").style.display = "grid";
       }
+      function displayText(x) {
+        var value = String(x == null ? "" : x);
+        for (var pass = 0; pass < 4; pass++) {
+          var textarea = document.createElement("textarea");
+          textarea.innerHTML = value;
+          var decoded = textarea.value;
+          if (decoded === value) break;
+          value = decoded;
+        }
+        return value;
+      }
       function esc(x) {
-        return String(x == null ? "" : x).replace(/[&<>"']/g, function (c) {
+        return displayText(x).replace(/[&<>"']/g, function (c) {
           return {
             "&": "&amp;",
             "<": "&lt;",

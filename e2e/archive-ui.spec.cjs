@@ -136,7 +136,13 @@ test("session export exposes a reusable server-streamed JSONL download", async (
 test("escaped environment context is readable and process content loads lazily", async ({
   page,
 }) => {
+  await expect(page.locator("tbody tr").first()).toContainText(
+    'calibre 路径 "C:\\Books" 应显示为正常引号',
+  );
   await page.locator("tbody tr").first().click();
+  await expect(page.locator(".turn-card").first()).toContainText(
+    "<environment_context>mock cwd</environment_context>",
+  );
   await page.locator(".turn-card").click();
   const step = page.locator(".process-step").first();
   await expect(step).toContainText("展开后加载完整过程正文");
