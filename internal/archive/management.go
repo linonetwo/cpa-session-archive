@@ -46,7 +46,14 @@ func (p *Plugin) handleManagement(raw []byte) ([]byte, error) {
 			status = http.StatusOK
 			body = managementHTML
 		}
-		return ok(managementResponse{StatusCode: status, Headers: http.Header{"Content-Type": []string{"text/html; charset=utf-8"}}, Body: body})
+		return ok(managementResponse{
+			StatusCode: status,
+			Headers: http.Header{
+				"Content-Type":  []string{"text/html; charset=utf-8"},
+				"Cache-Control": []string{"no-store, max-age=0"},
+			},
+			Body: body,
+		})
 	}
 	base := "/v0/management/plugins/" + pluginID
 	var target string
