@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"html"
 	"sort"
@@ -185,23 +184,32 @@ func (s *Store) sessionTurnGroups(ctx context.Context, sessionID string) ([]turn
 		// naturally includes it.
 		table = "turn_records"
 	}
-	rows, err := s.DB.QueryContext(ctx, `SELECT request_id,COALESCE(key_id,''),COALESCE(summary,''),COALESCE(response_preview,''),COALESCE(requested_model,''),COALESCE(model,''),COALESCE(outcome,''),status_code,started_at,completed_at,COALESCE(facets_json,'') FROM `+table+` WHERE session_id=? ORDER BY started_at,id`, sessionID)
+	rows, err := s.DB.QueryContext(ctx, `SELECT
+		r.request_id,COALESCE(r.key_id,''),COALESCE(r.summary,''),COALESCE(r.response_preview,''),
+		COALESCE(r.requested_model,''),COALESCE(r.model,''),COALESCE(r.outcome,''),r.status_code,
+		r.started_at,r.completed_at,
+		COALESCE((SELECT value FROM record_facets f WHERE f.request_id=r.request_id AND f.name='turn.id' LIMIT 1),''),
+		COALESCE((SELECT GROUP_CONCAT(value,CHAR(31)) FROM record_facets f WHERE f.request_id=r.request_id AND f.name='tool.name'),''),
+		COALESCE((SELECT GROUP_CONCAT(value,CHAR(31)) FROM record_facets f WHERE f.request_id=r.request_id AND f.name='request.kind'),'')
+		FROM `+table+` r WHERE r.session_id=? ORDER BY r.started_at,r.id`, sessionID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	groups := []turnGroup{}
 	for rows.Next() {
-		var requestID, keyID, summary, responsePreview, requestedModel, model, outcome, startedRaw, completedRaw, facetsRaw string
+		var requestID, keyID, summary, responsePreview, requestedModel, model, outcome, startedRaw, completedRaw string
+		var explicitID, toolNamesRaw, requestKindsRaw string
 		var statusCode int
-		if err = rows.Scan(&requestID, &keyID, &summary, &responsePreview, &requestedModel, &model, &outcome, &statusCode, &startedRaw, &completedRaw, &facetsRaw); err != nil {
+		if err = rows.Scan(
+			&requestID, &keyID, &summary, &responsePreview, &requestedModel, &model,
+			&outcome, &statusCode, &startedRaw, &completedRaw, &explicitID,
+			&toolNamesRaw, &requestKindsRaw,
+		); err != nil {
 			return nil, err
 		}
 		startedAt, _ := time.Parse(time.RFC3339Nano, startedRaw)
 		completedAt, _ := time.Parse(time.RFC3339Nano, completedRaw)
-		facets := map[string][]string{}
-		_ = json.Unmarshal([]byte(facetsRaw), &facets)
-		explicitID := firstTurnFacet(facets, "turn.id")
 		normalized := normalizeTurnSummary(summary)
 		startNew := len(groups) == 0
 		if !startNew {
@@ -248,7 +256,7 @@ func (s *Store) sessionTurnGroups(ctx context.Context, sessionID string) ([]turn
 		if readableFinalPreview(responsePreview) {
 			current.summary.FinalText = cleanTurnText(responsePreview)
 		}
-		for _, name := range facets["tool.name"] {
+		for _, name := range splitProjectionValues(toolNamesRaw) {
 			name = strings.TrimSpace(name)
 			if name == "" {
 				continue
@@ -258,7 +266,7 @@ func (s *Store) sessionTurnGroups(ctx context.Context, sessionID string) ([]turn
 				current.summary.ToolNames = append(current.summary.ToolNames, name)
 			}
 		}
-		for _, kind := range facets["request.kind"] {
+		for _, kind := range splitProjectionValues(requestKindsRaw) {
 			if strings.EqualFold(kind, "compaction") || strings.EqualFold(kind, "compact") {
 				current.summary.HasCompaction = true
 			}
@@ -271,13 +279,6 @@ func (s *Store) sessionTurnGroups(ctx context.Context, sessionID string) ([]turn
 		sort.Strings(groups[index].summary.ToolNames)
 	}
 	return groups, nil
-}
-
-func firstTurnFacet(facets map[string][]string, name string) string {
-	if values := facets[name]; len(values) > 0 {
-		return strings.TrimSpace(values[0])
-	}
-	return ""
 }
 
 func normalizeTurnSummary(value string) string {
