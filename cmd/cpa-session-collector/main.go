@@ -107,6 +107,12 @@ func main() {
 					continue
 				}
 				log.Printf("turn projection backfill complete")
+				if err := st.BackfillTurnFacetProjection(context.Background(), 64, 10*time.Millisecond); err != nil {
+					log.Printf("turn facet projection backfill will retry: %v", err)
+					time.Sleep(5 * time.Second)
+					continue
+				}
+				log.Printf("turn facet projection backfill complete")
 				break
 			}
 		}()

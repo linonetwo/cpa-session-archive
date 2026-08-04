@@ -73,6 +73,13 @@ func OpenStore(path string, storeUpstream bool) (*Store, error) {
 	CREATE INDEX IF NOT EXISTS idx_turn_records_session_time ON turn_records(session_id,started_at,id)`); e != nil {
 		return nil, e
 	}
+	for _, q := range []string{
+		"ALTER TABLE turn_records ADD COLUMN turn_id TEXT",
+		"ALTER TABLE turn_records ADD COLUMN tool_names_json TEXT",
+		"ALTER TABLE turn_records ADD COLUMN request_kinds_json TEXT",
+	} {
+		_, _ = db.Exec(q)
+	}
 	if _, e = db.Exec(`CREATE TABLE IF NOT EXISTS turn_texts(
 		session_id TEXT NOT NULL,
 		turn_id TEXT NOT NULL,
@@ -143,13 +150,14 @@ func (s *Store) PutBatch(batch []Record) error {
 		return e
 	}
 	defer st.Close()
-	turnSt, e := tx.Prepare(`INSERT INTO turn_records(id,request_id,session_id,key_id,summary,response_preview,requested_model,model,outcome,status_code,started_at,completed_at,facets_json)
-		SELECT id,request_id,session_id,key_id,summary,response_preview,requested_model,model,outcome,status_code,started_at,completed_at,facets_json
+	turnSt, e := tx.Prepare(`INSERT INTO turn_records(id,request_id,session_id,key_id,summary,response_preview,requested_model,model,outcome,status_code,started_at,completed_at,facets_json,turn_id,tool_names_json,request_kinds_json)
+		SELECT id,request_id,session_id,key_id,summary,response_preview,requested_model,model,outcome,status_code,started_at,completed_at,facets_json,?,?,?
 		FROM records WHERE request_id=?
 		ON CONFLICT(request_id) DO UPDATE SET
 			session_id=excluded.session_id,key_id=excluded.key_id,summary=excluded.summary,response_preview=excluded.response_preview,
 			requested_model=excluded.requested_model,model=excluded.model,outcome=excluded.outcome,status_code=excluded.status_code,
-			started_at=excluded.started_at,completed_at=excluded.completed_at,facets_json=excluded.facets_json`)
+			started_at=excluded.started_at,completed_at=excluded.completed_at,facets_json=excluded.facets_json,
+			turn_id=excluded.turn_id,tool_names_json=excluded.tool_names_json,request_kinds_json=excluded.request_kinds_json`)
 	if e != nil {
 		return e
 	}
@@ -174,7 +182,8 @@ func (s *Store) PutBatch(batch []Record) error {
 		if _, e = st.Exec(r.RequestID, r.TraceID, r.SessionID, r.KeyID, r.Summary, r.ResponsePreview, r.SourceFormat, r.RequestedModel, r.Model, r.Stream, r.Outcome, r.StatusCode, r.Error, r.StartedAt.Format(time.RFC3339Nano), r.CompletedAt.Format(time.RFC3339Nano), r.ParentResponseID, r.ResponseID, orig, up, resp, r.Truncated, string(m), facetsJSON(r.Facets)); e != nil {
 			return e
 		}
-		if _, e = turnSt.Exec(r.RequestID); e != nil {
+		turnID, toolNames, requestKinds := compactTurnFacets(r.Facets)
+		if _, e = turnSt.Exec(turnID, toolNames, requestKinds, r.RequestID); e != nil {
 			return e
 		}
 		if _, e = tx.Exec(`DELETE FROM record_facets WHERE request_id=?`, r.RequestID); e != nil {
@@ -220,6 +229,24 @@ func facetsJSON(v map[string][]string) string {
 	}
 	b, _ := json.Marshal(v)
 	return string(b)
+}
+
+func compactTurnFacets(facets map[string][]string) (string, string, string) {
+	turnID := ""
+	if values := facets["turn.id"]; len(values) > 0 {
+		turnID = strings.TrimSpace(values[0])
+	}
+	toolValues := facets["tool.name"]
+	if toolValues == nil {
+		toolValues = []string{}
+	}
+	kindValues := facets["request.kind"]
+	if kindValues == nil {
+		kindValues = []string{}
+	}
+	toolNames, _ := json.Marshal(toolValues)
+	requestKinds, _ := json.Marshal(kindValues)
+	return turnID, string(toolNames), string(requestKinds)
 }
 
 type FacetCount struct {

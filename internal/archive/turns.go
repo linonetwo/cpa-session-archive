@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"html"
 	"sort"
@@ -184,13 +185,17 @@ func (s *Store) sessionTurnGroups(ctx context.Context, sessionID string) ([]turn
 		// naturally includes it.
 		table = "turn_records"
 	}
+	facetColumns := `COALESCE(r.turn_id,''),COALESCE(r.tool_names_json,'[]'),COALESCE(r.request_kinds_json,'[]')`
+	if table == "records" {
+		facetColumns = `COALESCE(json_extract(r.facets_json,'$."turn.id"[0]'),''),
+			COALESCE(json_extract(r.facets_json,'$."tool.name"'),'[]'),
+			COALESCE(json_extract(r.facets_json,'$."request.kind"'),'[]')`
+	}
 	rows, err := s.DB.QueryContext(ctx, `SELECT
 		r.request_id,COALESCE(r.key_id,''),COALESCE(r.summary,''),COALESCE(r.response_preview,''),
 		COALESCE(r.requested_model,''),COALESCE(r.model,''),COALESCE(r.outcome,''),r.status_code,
 		r.started_at,r.completed_at,
-		COALESCE((SELECT value FROM record_facets f WHERE f.request_id=r.request_id AND f.name='turn.id' LIMIT 1),''),
-		COALESCE((SELECT GROUP_CONCAT(value,CHAR(31)) FROM record_facets f WHERE f.request_id=r.request_id AND f.name='tool.name'),''),
-		COALESCE((SELECT GROUP_CONCAT(value,CHAR(31)) FROM record_facets f WHERE f.request_id=r.request_id AND f.name='request.kind'),'')
+		`+facetColumns+`
 		FROM `+table+` r WHERE r.session_id=? ORDER BY r.started_at,r.id`, sessionID)
 	if err != nil {
 		return nil, err
@@ -256,7 +261,9 @@ func (s *Store) sessionTurnGroups(ctx context.Context, sessionID string) ([]turn
 		if readableFinalPreview(responsePreview) {
 			current.summary.FinalText = cleanTurnText(responsePreview)
 		}
-		for _, name := range splitProjectionValues(toolNamesRaw) {
+		toolNames := []string{}
+		_ = json.Unmarshal([]byte(toolNamesRaw), &toolNames)
+		for _, name := range toolNames {
 			name = strings.TrimSpace(name)
 			if name == "" {
 				continue
@@ -266,7 +273,9 @@ func (s *Store) sessionTurnGroups(ctx context.Context, sessionID string) ([]turn
 				current.summary.ToolNames = append(current.summary.ToolNames, name)
 			}
 		}
-		for _, kind := range splitProjectionValues(requestKindsRaw) {
+		requestKinds := []string{}
+		_ = json.Unmarshal([]byte(requestKindsRaw), &requestKinds)
+		for _, kind := range requestKinds {
 			if strings.EqualFold(kind, "compaction") || strings.EqualFold(kind, "compact") {
 				current.summary.HasCompaction = true
 			}

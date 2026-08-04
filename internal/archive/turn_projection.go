@@ -3,6 +3,7 @@ package archive
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"time"
 )
 
@@ -20,6 +21,83 @@ type turnProjectionRecord struct {
 	startedAt       sql.NullString
 	completedAt     sql.NullString
 	facetsJSON      sql.NullString
+}
+
+// BackfillTurnFacetProjection extracts only the three facets needed to group a
+// human-readable conversation. It processes newest records first and commits
+// small batches so ingestion remains available while an existing database is
+// upgraded.
+func (s *Store) BackfillTurnFacetProjection(ctx context.Context, batchSize int, pause time.Duration) error {
+	if batchSize < 1 {
+		batchSize = 64
+	}
+	beforeID := int64(^uint64(0) >> 1)
+	for {
+		rows, err := s.DB.QueryContext(ctx, `SELECT id,COALESCE(facets_json,'{}')
+			FROM turn_records
+			WHERE id<? AND (turn_id IS NULL OR tool_names_json IS NULL OR request_kinds_json IS NULL)
+			ORDER BY id DESC LIMIT ?`, beforeID, batchSize)
+		if err != nil {
+			return err
+		}
+		type item struct {
+			id      int64
+			turnID  string
+			tools   string
+			kinds   string
+		}
+		batch := make([]item, 0, batchSize)
+		for rows.Next() {
+			var id int64
+			var raw string
+			if err = rows.Scan(&id, &raw); err != nil {
+				rows.Close()
+				return err
+			}
+			facets := map[string][]string{}
+			_ = json.Unmarshal([]byte(raw), &facets)
+			turnID, tools, kinds := compactTurnFacets(facets)
+			batch = append(batch, item{id: id, turnID: turnID, tools: tools, kinds: kinds})
+		}
+		if err = rows.Close(); err != nil {
+			return err
+		}
+		if len(batch) == 0 {
+			return nil
+		}
+		tx, err := s.DB.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		stmt, err := tx.PrepareContext(ctx, `UPDATE turn_records
+			SET turn_id=?,tool_names_json=?,request_kinds_json=? WHERE id=?`)
+		if err != nil {
+			tx.Rollback()
+			return err
+		}
+		for _, value := range batch {
+			if _, err = stmt.ExecContext(ctx, value.turnID, value.tools, value.kinds, value.id); err != nil {
+				stmt.Close()
+				tx.Rollback()
+				return err
+			}
+		}
+		if err = stmt.Close(); err != nil {
+			tx.Rollback()
+			return err
+		}
+		if err = tx.Commit(); err != nil {
+			return err
+		}
+		beforeID = batch[len(batch)-1].id
+		if pause > 0 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(pause):
+			}
+		}
+	}
 }
 
 // BackfillTurnProjection copies only the compact fields used by the human

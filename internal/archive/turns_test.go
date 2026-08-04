@@ -139,6 +139,44 @@ func TestSessionTurnPagePrefersPartialNarrowProjection(t *testing.T) {
 	}
 }
 
+func TestBackfillTurnFacetProjection(t *testing.T) {
+	store, err := OpenStore(filepath.Join(t.TempDir(), "archive.sqlite"), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.DB.Close()
+	now := time.Now()
+	record := Record{
+		RequestID:   "facet",
+		SessionID:   "facet-session",
+		Summary:     "Run tool",
+		StartedAt:   now,
+		CompletedAt: now,
+		Facets: map[string][]string{
+			"turn.id":     {"turn-facet"},
+			"tool.name":   {"shell"},
+			"request.kind": {"compaction"},
+		},
+	}
+	if err = store.PutBatch([]Record{record}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.DB.Exec(`UPDATE turn_records SET turn_id=NULL,tool_names_json=NULL,request_kinds_json=NULL WHERE request_id='facet'`); err != nil {
+		t.Fatal(err)
+	}
+	if err = store.BackfillTurnFacetProjection(context.Background(), 1, 0); err != nil {
+		t.Fatal(err)
+	}
+	page, err := store.SessionTurnPage(context.Background(), "facet-session", 20, 0, "asc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Total != 1 || page.Turns[0].TurnID != "turn-facet" || !page.Turns[0].HasCompaction ||
+		len(page.Turns[0].ToolNames) != 1 || page.Turns[0].ToolNames[0] != "shell" {
+		t.Fatalf("page=%+v", page)
+	}
+}
+
 func TestSessionTurnPageInfersKimiTurnsFromSummaryRuns(t *testing.T) {
 	store, err := OpenStore(filepath.Join(t.TempDir(), "archive.sqlite"), false)
 	if err != nil {
