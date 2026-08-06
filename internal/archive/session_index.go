@@ -24,18 +24,19 @@ func indexSessionRecord(tx *sql.Tx, r Record) error {
 	completed := r.CompletedAt.Format(time.RFC3339Nano)
 	project := firstNonEmpty(r.ProjectName, firstFacet(r.Facets, "project.name"), firstFacet(r.Facets, "workspace.name"))
 	keyID := firstNonEmpty(r.KeyID, firstFacet(r.Facets, "caller.scope"))
-	_, err = tx.Exec(`INSERT INTO session_summaries(session_id,requests,first_at,last_at,key_id,model,project,summary,summary_at)
-		VALUES(?,1,?,?,?,?,?,?,?)
+	_, err = tx.Exec(`INSERT INTO session_summaries(session_id,requests,first_at,last_at,key_id,principal_id,model,project,summary,summary_at)
+		VALUES(?,1,?,?,?,?,?,?,?,?)
 		ON CONFLICT(session_id) DO UPDATE SET
 		requests=session_summaries.requests+1,
 		first_at=MIN(session_summaries.first_at,excluded.first_at),
 		last_at=MAX(session_summaries.last_at,excluded.last_at),
 		key_id=CASE WHEN session_summaries.key_id='' THEN excluded.key_id ELSE session_summaries.key_id END,
+		principal_id=CASE WHEN session_summaries.principal_id='' THEN excluded.principal_id ELSE session_summaries.principal_id END,
 		model=CASE WHEN excluded.last_at>=session_summaries.last_at AND excluded.model<>'' THEN excluded.model ELSE session_summaries.model END,
 		project=CASE WHEN session_summaries.project='' THEN excluded.project ELSE session_summaries.project END,
 		summary=CASE WHEN excluded.summary<>'' AND (session_summaries.summary='' OR excluded.summary_at<session_summaries.summary_at) THEN excluded.summary ELSE session_summaries.summary END,
 		summary_at=CASE WHEN excluded.summary<>'' AND (session_summaries.summary='' OR excluded.summary_at<session_summaries.summary_at) THEN excluded.summary_at ELSE session_summaries.summary_at END`,
-		r.SessionID, started, completed, keyID, r.RequestedModel, project, r.Summary, started)
+		r.SessionID, started, completed, keyID, r.PrincipalID, r.RequestedModel, project, r.Summary, started)
 	if err != nil {
 		return err
 	}
@@ -89,8 +90,8 @@ func (s *Store) BackfillSessionIndex(ctx context.Context) error {
 		for _, id := range ids[offset:end] {
 			var r Record
 			var started, completed, facets string
-			err = tx.QueryRowContext(ctx, `SELECT request_id,session_id,COALESCE(key_id,''),COALESCE(summary,''),COALESCE(requested_model,''),started_at,completed_at,COALESCE(facets_json,'') FROM records WHERE request_id=?`, id).
-				Scan(&r.RequestID, &r.SessionID, &r.KeyID, &r.Summary, &r.RequestedModel, &started, &completed, &facets)
+			err = tx.QueryRowContext(ctx, `SELECT request_id,session_id,COALESCE(key_id,''),COALESCE(principal_id,''),COALESCE(credential_hash,''),COALESCE(summary,''),COALESCE(requested_model,''),started_at,completed_at,COALESCE(facets_json,'') FROM records WHERE request_id=?`, id).
+				Scan(&r.RequestID, &r.SessionID, &r.KeyID, &r.PrincipalID, &r.CredentialHash, &r.Summary, &r.RequestedModel, &started, &completed, &facets)
 			if err != nil {
 				tx.Rollback()
 				return err

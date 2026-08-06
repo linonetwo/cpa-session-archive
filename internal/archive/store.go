@@ -23,16 +23,19 @@ type Store struct {
 	StoreUpstream bool
 }
 type SessionSummary struct {
-	SessionID     string   `json:"session_id"`
-	Requests      int      `json:"requests"`
-	FirstAt       string   `json:"first_at"`
-	LastAt        string   `json:"last_at"`
-	KeyID         string   `json:"key_id,omitempty"`
-	Model         string   `json:"model,omitempty"`
-	Project       string   `json:"project,omitempty"`
-	Summary       string   `json:"summary,omitempty"`
-	Kinds         []string `json:"kinds,omitempty"`
-	ThreadSources []string `json:"thread_sources,omitempty"`
+	SessionID        string   `json:"session_id"`
+	Requests         int      `json:"requests"`
+	FirstAt          string   `json:"first_at"`
+	LastAt           string   `json:"last_at"`
+	KeyID            string   `json:"key_id,omitempty"`
+	PrincipalID      string   `json:"principal_id,omitempty"`
+	PrincipalAlias   string   `json:"principal_alias,omitempty"`
+	CredentialHashes []string `json:"credential_hashes,omitempty"`
+	Model            string   `json:"model,omitempty"`
+	Project          string   `json:"project,omitempty"`
+	Summary          string   `json:"summary,omitempty"`
+	Kinds            []string `json:"kinds,omitempty"`
+	ThreadSources    []string `json:"thread_sources,omitempty"`
 }
 type Stats struct {
 	Records         int64 `json:"records"`
@@ -52,8 +55,20 @@ func OpenStore(path string, storeUpstream bool) (*Store, error) {
 	if _, e = db.Exec(schema); e != nil {
 		return nil, e
 	}
-	for _, q := range []string{"ALTER TABLE records ADD COLUMN original_ref TEXT", "ALTER TABLE records ADD COLUMN upstream_ref TEXT", "ALTER TABLE records ADD COLUMN response_ref TEXT", "ALTER TABLE records ADD COLUMN facets_json TEXT", "ALTER TABLE records ADD COLUMN summary TEXT", "ALTER TABLE records ADD COLUMN response_preview TEXT"} {
+	for _, q := range []string{"ALTER TABLE records ADD COLUMN original_ref TEXT", "ALTER TABLE records ADD COLUMN upstream_ref TEXT", "ALTER TABLE records ADD COLUMN response_ref TEXT", "ALTER TABLE records ADD COLUMN facets_json TEXT", "ALTER TABLE records ADD COLUMN summary TEXT", "ALTER TABLE records ADD COLUMN response_preview TEXT", "ALTER TABLE records ADD COLUMN principal_id TEXT", "ALTER TABLE records ADD COLUMN credential_hash TEXT", "ALTER TABLE session_summaries ADD COLUMN principal_id TEXT NOT NULL DEFAULT ''"} {
 		_, _ = db.Exec(q)
+	}
+	if _, e = db.Exec(`CREATE TABLE IF NOT EXISTS credential_principals(
+		credential_hash TEXT PRIMARY KEY COLLATE NOCASE,
+		principal_id TEXT NOT NULL,
+		alias TEXT NOT NULL DEFAULT '',
+		status TEXT NOT NULL DEFAULT 'active',
+		updated_at TEXT NOT NULL
+	);
+	CREATE INDEX IF NOT EXISTS idx_credential_principals_principal ON credential_principals(principal_id);
+	CREATE INDEX IF NOT EXISTS idx_records_principal_time ON records(principal_id,started_at);
+	CREATE INDEX IF NOT EXISTS idx_records_credential_time ON records(credential_hash,started_at)`); e != nil {
+		return nil, e
 	}
 	if _, e = db.Exec(`CREATE TABLE IF NOT EXISTS turn_records(
 		id INTEGER PRIMARY KEY,
@@ -77,6 +92,8 @@ func OpenStore(path string, storeUpstream bool) (*Store, error) {
 		"ALTER TABLE turn_records ADD COLUMN turn_id TEXT",
 		"ALTER TABLE turn_records ADD COLUMN tool_names_json TEXT",
 		"ALTER TABLE turn_records ADD COLUMN request_kinds_json TEXT",
+		"ALTER TABLE turn_records ADD COLUMN principal_id TEXT",
+		"ALTER TABLE turn_records ADD COLUMN credential_hash TEXT",
 	} {
 		_, _ = db.Exec(q)
 	}
@@ -140,29 +157,35 @@ func putPayload(tx *sql.Tx, raw []byte) (string, error) {
 	return mb.Hash, nil
 }
 func (s *Store) PutBatch(batch []Record) error {
+	identityIndex, e := s.credentialPrincipalIndex(context.Background())
+	if e != nil {
+		return e
+	}
 	tx, e := s.DB.Begin()
 	if e != nil {
 		return e
 	}
 	defer tx.Rollback()
-	st, e := tx.Prepare(`INSERT INTO records(request_id,trace_id,session_id,key_id,summary,response_preview,source_format,requested_model,model,stream,outcome,status_code,error,started_at,completed_at,parent_response_id,response_id,original_ref,upstream_ref,response_ref,truncated,metadata_json,facets_json,original_request_gz,upstream_request_gz,response_gz) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,NULL,NULL) ON CONFLICT(request_id) DO UPDATE SET outcome=excluded.outcome,status_code=excluded.status_code,error=excluded.error,completed_at=excluded.completed_at,response_id=excluded.response_id,response_ref=excluded.response_ref,truncated=excluded.truncated,summary=CASE WHEN COALESCE(records.summary,'')='' THEN excluded.summary ELSE records.summary END,response_preview=CASE WHEN COALESCE(records.response_preview,'')='' THEN excluded.response_preview ELSE records.response_preview END`)
+	st, e := tx.Prepare(`INSERT INTO records(request_id,trace_id,session_id,key_id,summary,response_preview,source_format,requested_model,model,stream,outcome,status_code,error,started_at,completed_at,parent_response_id,response_id,original_ref,upstream_ref,response_ref,truncated,metadata_json,facets_json,principal_id,credential_hash,original_request_gz,upstream_request_gz,response_gz) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,NULL,NULL) ON CONFLICT(request_id) DO UPDATE SET outcome=excluded.outcome,status_code=excluded.status_code,error=excluded.error,completed_at=excluded.completed_at,response_id=excluded.response_id,response_ref=excluded.response_ref,truncated=excluded.truncated,principal_id=CASE WHEN excluded.principal_id<>'' THEN excluded.principal_id ELSE records.principal_id END,credential_hash=CASE WHEN excluded.credential_hash<>'' THEN excluded.credential_hash ELSE records.credential_hash END,summary=CASE WHEN COALESCE(records.summary,'')='' THEN excluded.summary ELSE records.summary END,response_preview=CASE WHEN COALESCE(records.response_preview,'')='' THEN excluded.response_preview ELSE records.response_preview END`)
 	if e != nil {
 		return e
 	}
 	defer st.Close()
-	turnSt, e := tx.Prepare(`INSERT INTO turn_records(id,request_id,session_id,key_id,summary,response_preview,requested_model,model,outcome,status_code,started_at,completed_at,facets_json,turn_id,tool_names_json,request_kinds_json)
-		SELECT id,request_id,session_id,key_id,summary,response_preview,requested_model,model,outcome,status_code,started_at,completed_at,facets_json,?,?,?
+	turnSt, e := tx.Prepare(`INSERT INTO turn_records(id,request_id,session_id,key_id,summary,response_preview,requested_model,model,outcome,status_code,started_at,completed_at,facets_json,principal_id,credential_hash,turn_id,tool_names_json,request_kinds_json)
+		SELECT id,request_id,session_id,key_id,summary,response_preview,requested_model,model,outcome,status_code,started_at,completed_at,facets_json,principal_id,credential_hash,?,?,?
 		FROM records WHERE request_id=?
 		ON CONFLICT(request_id) DO UPDATE SET
 			session_id=excluded.session_id,key_id=excluded.key_id,summary=excluded.summary,response_preview=excluded.response_preview,
 			requested_model=excluded.requested_model,model=excluded.model,outcome=excluded.outcome,status_code=excluded.status_code,
 			started_at=excluded.started_at,completed_at=excluded.completed_at,facets_json=excluded.facets_json,
+			principal_id=excluded.principal_id,credential_hash=excluded.credential_hash,
 			turn_id=excluded.turn_id,tool_names_json=excluded.tool_names_json,request_kinds_json=excluded.request_kinds_json`)
 	if e != nil {
 		return e
 	}
 	defer turnSt.Close()
 	for _, r := range batch {
+		resolveIdentity(&r, identityIndex)
 		orig, e := putPayload(tx, r.OriginalRequest)
 		if e != nil {
 			return e
@@ -179,7 +202,7 @@ func (s *Store) PutBatch(batch []Record) error {
 			return e
 		}
 		m, _ := json.Marshal(r.Metadata)
-		if _, e = st.Exec(r.RequestID, r.TraceID, r.SessionID, r.KeyID, r.Summary, r.ResponsePreview, r.SourceFormat, r.RequestedModel, r.Model, r.Stream, r.Outcome, r.StatusCode, r.Error, r.StartedAt.Format(time.RFC3339Nano), r.CompletedAt.Format(time.RFC3339Nano), r.ParentResponseID, r.ResponseID, orig, up, resp, r.Truncated, string(m), facetsJSON(r.Facets)); e != nil {
+		if _, e = st.Exec(r.RequestID, r.TraceID, r.SessionID, r.KeyID, r.Summary, r.ResponsePreview, r.SourceFormat, r.RequestedModel, r.Model, r.Stream, r.Outcome, r.StatusCode, r.Error, r.StartedAt.Format(time.RFC3339Nano), r.CompletedAt.Format(time.RFC3339Nano), r.ParentResponseID, r.ResponseID, orig, up, resp, r.Truncated, string(m), facetsJSON(r.Facets), r.PrincipalID, r.CredentialHash); e != nil {
 			return e
 		}
 		turnID, toolNames, requestKinds := compactTurnFacets(r.Facets)
@@ -281,7 +304,10 @@ func (s *Store) Facets(ctx context.Context) ([]FacetCount, error) {
 	return out, rows.Err()
 }
 func (s *Store) Sessions(ctx context.Context, limit int) ([]SessionSummary, error) {
-	rows, e := s.DB.QueryContext(ctx, `SELECT s.session_id,s.requests,s.first_at,s.last_at,s.key_id,s.model,s.project,s.summary,
+	rows, e := s.DB.QueryContext(ctx, `SELECT s.session_id,s.requests,s.first_at,s.last_at,s.key_id,COALESCE(s.principal_id,''),
+		COALESCE((SELECT alias FROM credential_principals p WHERE p.principal_id=s.principal_id AND alias<>'' ORDER BY updated_at DESC LIMIT 1),''),
+		COALESCE((SELECT GROUP_CONCAT(DISTINCT credential_hash) FROM records r WHERE r.session_id=s.session_id AND COALESCE(credential_hash,'')<>''),''),
+		s.model,s.project,s.summary,
 		COALESCE((SELECT GROUP_CONCAT(value,CHAR(31)) FROM session_facets f WHERE f.session_id=s.session_id AND f.name='request.kind'),''),
 		COALESCE((SELECT GROUP_CONCAT(value,CHAR(31)) FROM session_facets f WHERE f.session_id=s.session_id AND f.name='thread.source'),'')
 		FROM session_summaries s ORDER BY s.last_at DESC LIMIT ?`, limit)
@@ -293,9 +319,11 @@ func (s *Store) Sessions(ctx context.Context, limit int) ([]SessionSummary, erro
 	for rows.Next() {
 		var x SessionSummary
 		var kinds, sources string
-		if e = rows.Scan(&x.SessionID, &x.Requests, &x.FirstAt, &x.LastAt, &x.KeyID, &x.Model, &x.Project, &x.Summary, &kinds, &sources); e != nil {
+		var credentials string
+		if e = rows.Scan(&x.SessionID, &x.Requests, &x.FirstAt, &x.LastAt, &x.KeyID, &x.PrincipalID, &x.PrincipalAlias, &credentials, &x.Model, &x.Project, &x.Summary, &kinds, &sources); e != nil {
 			return nil, e
 		}
+		x.CredentialHashes = splitCommaValues(credentials)
 		x.Kinds = splitProjectionValues(kinds)
 		x.ThreadSources = splitProjectionValues(sources)
 		x.Summary = cleanTurnText(x.Summary)
@@ -311,7 +339,10 @@ func (s *Store) SessionsFiltered(ctx context.Context, limit int, filters map[str
 		where = append(where, `EXISTS (SELECT 1 FROM session_facets f WHERE f.session_id=s.session_id AND f.name=? AND f.value=?)`)
 		args = append(args, name, value)
 	}
-	q := `SELECT s.session_id,s.requests,s.first_at,s.last_at,s.key_id,s.model,s.project,s.summary,
+	q := `SELECT s.session_id,s.requests,s.first_at,s.last_at,s.key_id,COALESCE(s.principal_id,''),
+		COALESCE((SELECT alias FROM credential_principals p WHERE p.principal_id=s.principal_id AND alias<>'' ORDER BY updated_at DESC LIMIT 1),''),
+		COALESCE((SELECT GROUP_CONCAT(DISTINCT credential_hash) FROM records r WHERE r.session_id=s.session_id AND COALESCE(credential_hash,'')<>''),''),
+		s.model,s.project,s.summary,
 		COALESCE((SELECT GROUP_CONCAT(value,CHAR(31)) FROM session_facets sf WHERE sf.session_id=s.session_id AND sf.name='request.kind'),''),
 		COALESCE((SELECT GROUP_CONCAT(value,CHAR(31)) FROM session_facets sf WHERE sf.session_id=s.session_id AND sf.name='thread.source'),'')
 		FROM session_summaries s`
@@ -329,9 +360,11 @@ func (s *Store) SessionsFiltered(ctx context.Context, limit int, filters map[str
 	for rows.Next() {
 		var x SessionSummary
 		var kinds, sources string
-		if e = rows.Scan(&x.SessionID, &x.Requests, &x.FirstAt, &x.LastAt, &x.KeyID, &x.Model, &x.Project, &x.Summary, &kinds, &sources); e != nil {
+		var credentials string
+		if e = rows.Scan(&x.SessionID, &x.Requests, &x.FirstAt, &x.LastAt, &x.KeyID, &x.PrincipalID, &x.PrincipalAlias, &credentials, &x.Model, &x.Project, &x.Summary, &kinds, &sources); e != nil {
 			return nil, e
 		}
+		x.CredentialHashes = splitCommaValues(credentials)
 		x.Kinds = splitProjectionValues(kinds)
 		x.ThreadSources = splitProjectionValues(sources)
 		x.Summary = cleanTurnText(x.Summary)
@@ -345,6 +378,13 @@ func splitProjectionValues(value string) []string {
 		return nil
 	}
 	return strings.Split(value, string(rune(31)))
+}
+
+func splitCommaValues(value string) []string {
+	if value == "" {
+		return nil
+	}
+	return strings.Split(value, ",")
 }
 
 type SessionPage struct {
@@ -371,7 +411,9 @@ func (s *Store) SessionMetadataRange(ctx context.Context, id string, limit, offs
 	if strings.EqualFold(order, "desc") {
 		direction = "DESC"
 	}
-	rows, e := s.DB.QueryContext(ctx, `SELECT request_id,trace_id,COALESCE(key_id,''),COALESCE(summary,''),COALESCE(response_preview,''),COALESCE(source_format,''),COALESCE(requested_model,''),COALESCE(model,''),stream,COALESCE(outcome,''),status_code,COALESCE(error,''),started_at,completed_at,COALESCE(parent_response_id,''),COALESCE(response_id,''),truncated,COALESCE(metadata_json,''),COALESCE(facets_json,'') FROM records WHERE `+clause+` ORDER BY started_at `+direction+`,id `+direction+` LIMIT ? OFFSET ?`, queryArgs...)
+	rows, e := s.DB.QueryContext(ctx, `SELECT request_id,trace_id,COALESCE(key_id,''),COALESCE(principal_id,''),COALESCE(credential_hash,''),
+		COALESCE((SELECT alias FROM credential_principals p WHERE p.principal_id=records.principal_id AND alias<>'' ORDER BY updated_at DESC LIMIT 1),''),
+		COALESCE(summary,''),COALESCE(response_preview,''),COALESCE(source_format,''),COALESCE(requested_model,''),COALESCE(model,''),stream,COALESCE(outcome,''),status_code,COALESCE(error,''),started_at,completed_at,COALESCE(parent_response_id,''),COALESCE(response_id,''),truncated,COALESCE(metadata_json,''),COALESCE(facets_json,'') FROM records WHERE `+clause+` ORDER BY started_at `+direction+`,id `+direction+` LIMIT ? OFFSET ?`, queryArgs...)
 	if e != nil {
 		return out, e
 	}
@@ -381,7 +423,7 @@ func (s *Store) SessionMetadataRange(ctx context.Context, id string, limit, offs
 		var stream, truncated int
 		var started, completed, metadata, facets string
 		x.SessionID = id
-		if e = rows.Scan(&x.RequestID, &x.TraceID, &x.KeyID, &x.Summary, &x.ResponsePreview, &x.SourceFormat, &x.RequestedModel, &x.Model, &stream, &x.Outcome, &x.StatusCode, &x.Error, &started, &completed, &x.ParentResponseID, &x.ResponseID, &truncated, &metadata, &facets); e != nil {
+		if e = rows.Scan(&x.RequestID, &x.TraceID, &x.KeyID, &x.PrincipalID, &x.CredentialHash, &x.PrincipalAlias, &x.Summary, &x.ResponsePreview, &x.SourceFormat, &x.RequestedModel, &x.Model, &stream, &x.Outcome, &x.StatusCode, &x.Error, &started, &completed, &x.ParentResponseID, &x.ResponseID, &truncated, &metadata, &facets); e != nil {
 			return out, e
 		}
 		x.Stream = stream != 0
@@ -400,7 +442,9 @@ func (s *Store) SessionRange(ctx context.Context, id string, limit, offset, prev
 	if e := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM records WHERE session_id=?`, id).Scan(&out.Total); e != nil {
 		return out, e
 	}
-	rows, e := s.DB.QueryContext(ctx, `SELECT request_id,trace_id,COALESCE(key_id,''),COALESCE(summary,''),COALESCE(response_preview,''),COALESCE(source_format,''),COALESCE(requested_model,''),COALESCE(model,''),stream,COALESCE(outcome,''),status_code,COALESCE(error,''),started_at,completed_at,COALESCE(parent_response_id,''),COALESCE(response_id,''),COALESCE(original_ref,''),COALESCE(upstream_ref,''),COALESCE(response_ref,''),truncated,COALESCE(metadata_json,''),COALESCE(facets_json,''),original_request_gz,upstream_request_gz,response_gz FROM records WHERE session_id=? ORDER BY started_at LIMIT ? OFFSET ?`, id, limit, offset)
+	rows, e := s.DB.QueryContext(ctx, `SELECT request_id,trace_id,COALESCE(key_id,''),COALESCE(principal_id,''),COALESCE(credential_hash,''),
+		COALESCE((SELECT alias FROM credential_principals p WHERE p.principal_id=records.principal_id AND alias<>'' ORDER BY updated_at DESC LIMIT 1),''),
+		COALESCE(summary,''),COALESCE(response_preview,''),COALESCE(source_format,''),COALESCE(requested_model,''),COALESCE(model,''),stream,COALESCE(outcome,''),status_code,COALESCE(error,''),started_at,completed_at,COALESCE(parent_response_id,''),COALESCE(response_id,''),COALESCE(original_ref,''),COALESCE(upstream_ref,''),COALESCE(response_ref,''),truncated,COALESCE(metadata_json,''),COALESCE(facets_json,''),original_request_gz,upstream_request_gz,response_gz FROM records WHERE session_id=? ORDER BY started_at LIMIT ? OFFSET ?`, id, limit, offset)
 	if e != nil {
 		return out, e
 	}
@@ -411,7 +455,7 @@ func (s *Store) SessionRange(ctx context.Context, id string, limit, offset, prev
 		var started, done, meta, facets, or, ur, rr string
 		var oldO, oldU, oldR []byte
 		x.SessionID = id
-		if e = rows.Scan(&x.RequestID, &x.TraceID, &x.KeyID, &x.Summary, &x.ResponsePreview, &x.SourceFormat, &x.RequestedModel, &x.Model, &stream, &x.Outcome, &x.StatusCode, &x.Error, &started, &done, &x.ParentResponseID, &x.ResponseID, &or, &ur, &rr, &trunc, &meta, &facets, &oldO, &oldU, &oldR); e != nil {
+		if e = rows.Scan(&x.RequestID, &x.TraceID, &x.KeyID, &x.PrincipalID, &x.CredentialHash, &x.PrincipalAlias, &x.Summary, &x.ResponsePreview, &x.SourceFormat, &x.RequestedModel, &x.Model, &stream, &x.Outcome, &x.StatusCode, &x.Error, &started, &done, &x.ParentResponseID, &x.ResponseID, &or, &ur, &rr, &trunc, &meta, &facets, &oldO, &oldU, &oldR); e != nil {
 			return out, e
 		}
 		x.Stream = stream != 0
@@ -460,7 +504,9 @@ func (s *Store) Request(ctx context.Context, id string) (Record, error) {
 	var stream, trunc int
 	var started, done, meta, facets, or, ur, rr, sessionID string
 	var oldO, oldU, oldR []byte
-	err := s.DB.QueryRowContext(ctx, `SELECT session_id,request_id,trace_id,COALESCE(key_id,''),COALESCE(summary,''),COALESCE(response_preview,''),COALESCE(source_format,''),COALESCE(requested_model,''),COALESCE(model,''),stream,COALESCE(outcome,''),status_code,COALESCE(error,''),started_at,completed_at,COALESCE(parent_response_id,''),COALESCE(response_id,''),COALESCE(original_ref,''),COALESCE(upstream_ref,''),COALESCE(response_ref,''),truncated,COALESCE(metadata_json,''),COALESCE(facets_json,''),original_request_gz,upstream_request_gz,response_gz FROM records WHERE request_id=? LIMIT 1`, id).Scan(&sessionID, &x.RequestID, &x.TraceID, &x.KeyID, &x.Summary, &x.ResponsePreview, &x.SourceFormat, &x.RequestedModel, &x.Model, &stream, &x.Outcome, &x.StatusCode, &x.Error, &started, &done, &x.ParentResponseID, &x.ResponseID, &or, &ur, &rr, &trunc, &meta, &facets, &oldO, &oldU, &oldR)
+	err := s.DB.QueryRowContext(ctx, `SELECT session_id,request_id,trace_id,COALESCE(key_id,''),COALESCE(principal_id,''),COALESCE(credential_hash,''),
+		COALESCE((SELECT alias FROM credential_principals p WHERE p.principal_id=records.principal_id AND alias<>'' ORDER BY updated_at DESC LIMIT 1),''),
+		COALESCE(summary,''),COALESCE(response_preview,''),COALESCE(source_format,''),COALESCE(requested_model,''),COALESCE(model,''),stream,COALESCE(outcome,''),status_code,COALESCE(error,''),started_at,completed_at,COALESCE(parent_response_id,''),COALESCE(response_id,''),COALESCE(original_ref,''),COALESCE(upstream_ref,''),COALESCE(response_ref,''),truncated,COALESCE(metadata_json,''),COALESCE(facets_json,''),original_request_gz,upstream_request_gz,response_gz FROM records WHERE request_id=? LIMIT 1`, id).Scan(&sessionID, &x.RequestID, &x.TraceID, &x.KeyID, &x.PrincipalID, &x.CredentialHash, &x.PrincipalAlias, &x.Summary, &x.ResponsePreview, &x.SourceFormat, &x.RequestedModel, &x.Model, &stream, &x.Outcome, &x.StatusCode, &x.Error, &started, &done, &x.ParentResponseID, &x.ResponseID, &or, &ur, &rr, &trunc, &meta, &facets, &oldO, &oldU, &oldR)
 	if err != nil {
 		return x, err
 	}
@@ -575,6 +621,9 @@ type TrainingRecord struct {
 	StartedAt      time.Time           `json:"started_at"`
 	CompletedAt    time.Time           `json:"completed_at"`
 	KeyID          string              `json:"key_id,omitempty"`
+	PrincipalID    string              `json:"principal_id,omitempty"`
+	CredentialHash string              `json:"credential_hash,omitempty"`
+	PrincipalAlias string              `json:"principal_alias,omitempty"`
 	RequestedModel string              `json:"requested_model,omitempty"`
 	Model          string              `json:"model,omitempty"`
 	Outcome        string              `json:"outcome,omitempty"`
@@ -626,7 +675,7 @@ func (s *Store) ExportArchiveJSONL(ctx context.Context, id string, dst io.Writer
 		if loadErr != nil {
 			return loadErr
 		}
-		item := TrainingRecord{SchemaVersion: 1, SessionID: r.SessionID, RequestID: r.RequestID, StartedAt: r.StartedAt, CompletedAt: r.CompletedAt, KeyID: r.KeyID, RequestedModel: r.RequestedModel, Model: r.Model, Outcome: r.Outcome, StatusCode: r.StatusCode, Metadata: r.Metadata, Facets: r.Facets, Request: decodedPayload(r.OriginalRequest), Response: decodedPayload(r.Response)}
+		item := TrainingRecord{SchemaVersion: 2, SessionID: r.SessionID, RequestID: r.RequestID, StartedAt: r.StartedAt, CompletedAt: r.CompletedAt, KeyID: r.KeyID, PrincipalID: r.PrincipalID, CredentialHash: r.CredentialHash, PrincipalAlias: r.PrincipalAlias, RequestedModel: r.RequestedModel, Model: r.Model, Outcome: r.Outcome, StatusCode: r.StatusCode, Metadata: r.Metadata, Facets: r.Facets, Request: decodedPayload(r.OriginalRequest), Response: decodedPayload(r.Response)}
 		if err = enc.Encode(item); err != nil {
 			return err
 		}

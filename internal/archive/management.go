@@ -1,6 +1,7 @@
 package archive
 
 import (
+	"bytes"
 	_ "embed"
 	"encoding/json"
 	"fmt"
@@ -30,7 +31,7 @@ type managementResponse struct {
 
 func (p *Plugin) managementRegistration() map[string]any {
 	base := "/plugins/" + pluginID
-	return map[string]any{"Routes": []map[string]string{{"Method": "GET", "Path": base + "/stats"}, {"Method": "GET", "Path": base + "/facets"}, {"Method": "GET", "Path": base + "/sessions"}, {"Method": "GET", "Path": base + "/turns"}, {"Method": "GET", "Path": base + "/turn-text"}, {"Method": "GET", "Path": base + "/requests"}, {"Method": "GET", "Path": base + "/request-context"}, {"Method": "GET", "Path": base + "/request-view"}, {"Method": "GET", "Path": base + "/export"}}, "Resources": []map[string]string{{"Path": "/index.html", "Menu": "会话归档", "Description": "Browse archived projects, sessions and training data."}}}
+	return map[string]any{"Routes": []map[string]string{{"Method": "GET", "Path": base + "/stats"}, {"Method": "GET", "Path": base + "/facets"}, {"Method": "GET", "Path": base + "/sessions"}, {"Method": "GET", "Path": base + "/turns"}, {"Method": "GET", "Path": base + "/turn-text"}, {"Method": "GET", "Path": base + "/requests"}, {"Method": "GET", "Path": base + "/request-context"}, {"Method": "GET", "Path": base + "/request-view"}, {"Method": "GET", "Path": base + "/export"}, {"Method": "GET", "Path": base + "/identity-mappings"}, {"Method": "PUT", "Path": base + "/identity-mappings"}}, "Resources": []map[string]string{{"Path": "/index.html", "Menu": "会话归档", "Description": "Browse archived projects, sessions and training data."}}}
 }
 func (p *Plugin) handleManagement(raw []byte) ([]byte, error) {
 	var r managementRequest
@@ -63,6 +64,8 @@ func (p *Plugin) handleManagement(raw []byte) ([]byte, error) {
 		target = "/v1/stats"
 	case r.Method == http.MethodGet && path == base+"/facets":
 		target = "/v1/facets"
+	case (r.Method == http.MethodGet || r.Method == http.MethodPut) && path == base+"/identity-mappings":
+		target = "/v1/identity-mappings"
 	case r.Method == http.MethodGet && path == base+"/sessions":
 		if id := r.Query.Get("id"); id != "" {
 			target = "/v1/sessions/" + url.PathEscape(id)
@@ -102,7 +105,10 @@ func (p *Plugin) handleManagement(raw []byte) ([]byte, error) {
 			u += "?" + q.Encode()
 		}
 	}
-	req, _ := http.NewRequest(http.MethodGet, u, nil)
+	req, _ := http.NewRequest(r.Method, u, bytes.NewReader(r.Body))
+	if len(r.Body) > 0 {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	resp, e := p.client.Do(req)
 	if e != nil {
 		body, _ := json.Marshal(map[string]string{"error": "collector unavailable", "detail": fmt.Sprintf("%s: %v", u, e)})

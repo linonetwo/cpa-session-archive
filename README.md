@@ -68,6 +68,8 @@ Endpoints:
 - GET /healthz
 - GET /v1/stats
 - GET /v1/facets
+- GET /v1/identity-mappings
+- PUT /v1/identity-mappings
 - GET /v1/sessions?limit=100
 - GET /v1/sessions/{session-id}
 - GET /v1/requests/{request-id}
@@ -80,6 +82,29 @@ Endpoints:
 - GET /v1/export-tickets?scope=session|all&format=archive|sft&session_id={session-id} (management proxy only)
 - GET /archive-api/v1/exports/{ticket}
 - POST /v1/maintenance/gc
+
+## Stable caller identity and key rotation
+
+New CPA key-permission builds attach both a stable `principal_id` and the
+credential-version SHA-256 fingerprint to each archived request. Search,
+session summaries, turn views, and both JSONL export formats expose those
+fields. The original `key_id` remains unchanged as a raw audit field.
+
+Rotating a plaintext CPA key therefore does not split the caller's archive:
+the new fingerprint is mapped to the same principal, while old fingerprints
+remain searchable. Legacy hash-only records can be backfilled without
+rewriting request/response payloads or content-addressed blobs:
+
+~~~bash
+cpa-session-identity-migrate \
+  -db /data/archive.sqlite \
+  -file /path/to/cpa-key-access-policy-state.json
+~~~
+
+The same mapping envelope can be sent to `PUT /v1/identity-mappings`.
+Backfill updates only relational projections and facet indexes; CAS hashes and
+lossless payload bytes remain unchanged. Unmapped historical `key_id` strings
+are not guessed to be credential hashes.
 
 ## Management UI and faceted search
 

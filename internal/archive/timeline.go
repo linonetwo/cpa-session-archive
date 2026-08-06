@@ -23,6 +23,9 @@ type RequestTimelineView struct {
 	RequestID       string              `json:"request_id"`
 	SessionID       string              `json:"session_id"`
 	KeyID           string              `json:"key_id,omitempty"`
+	PrincipalID     string              `json:"principal_id,omitempty"`
+	CredentialHash  string              `json:"credential_hash,omitempty"`
+	PrincipalAlias  string              `json:"principal_alias,omitempty"`
 	Summary         string              `json:"summary,omitempty"`
 	RequestedModel  string              `json:"requested_model,omitempty"`
 	Model           string              `json:"model,omitempty"`
@@ -48,21 +51,25 @@ func (s *Store) RequestTimelinePreview(ctx context.Context, id string) (RequestT
 	var view RequestTimelineView
 	var responsePreview, startedRaw, completedRaw, facetsRaw string
 	err := s.DB.QueryRowContext(ctx, `SELECT
-		request_id,session_id,COALESCE(key_id,''),COALESCE(summary,''),COALESCE(response_preview,''),
+		request_id,session_id,COALESCE(key_id,''),COALESCE(principal_id,''),COALESCE(credential_hash,''),
+		COALESCE((SELECT alias FROM credential_principals p WHERE p.principal_id=turn_records.principal_id AND alias<>'' ORDER BY updated_at DESC LIMIT 1),''),
+		COALESCE(summary,''),COALESCE(response_preview,''),
 		COALESCE(requested_model,''),COALESCE(model,''),COALESCE(outcome,''),COALESCE(status_code,0),
 		COALESCE(started_at,''),COALESCE(completed_at,''),COALESCE(facets_json,'')
 		FROM turn_records WHERE request_id=? LIMIT 1`, id).Scan(
-		&view.RequestID, &view.SessionID, &view.KeyID, &view.Summary, &responsePreview,
+		&view.RequestID, &view.SessionID, &view.KeyID, &view.PrincipalID, &view.CredentialHash, &view.PrincipalAlias, &view.Summary, &responsePreview,
 		&view.RequestedModel, &view.Model, &view.Outcome, &view.StatusCode,
 		&startedRaw, &completedRaw, &facetsRaw,
 	)
 	if err != nil {
 		err = s.DB.QueryRowContext(ctx, `SELECT
-			request_id,session_id,COALESCE(key_id,''),COALESCE(summary,''),COALESCE(response_preview,''),
+			request_id,session_id,COALESCE(key_id,''),COALESCE(principal_id,''),COALESCE(credential_hash,''),
+			COALESCE((SELECT alias FROM credential_principals p WHERE p.principal_id=records.principal_id AND alias<>'' ORDER BY updated_at DESC LIMIT 1),''),
+			COALESCE(summary,''),COALESCE(response_preview,''),
 			COALESCE(requested_model,''),COALESCE(model,''),COALESCE(outcome,''),COALESCE(status_code,0),
 			COALESCE(started_at,''),COALESCE(completed_at,''),COALESCE(facets_json,'')
 			FROM records WHERE request_id=? LIMIT 1`, id).Scan(
-			&view.RequestID, &view.SessionID, &view.KeyID, &view.Summary, &responsePreview,
+			&view.RequestID, &view.SessionID, &view.KeyID, &view.PrincipalID, &view.CredentialHash, &view.PrincipalAlias, &view.Summary, &responsePreview,
 			&view.RequestedModel, &view.Model, &view.Outcome, &view.StatusCode,
 			&startedRaw, &completedRaw, &facetsRaw,
 		)
@@ -172,6 +179,7 @@ func (s *Store) RequestTimeline(ctx context.Context, id string) (RequestTimeline
 	systemChars, toolDefinitions := requestContextCounts(currentRoot)
 	return RequestTimelineView{
 		RequestID: current.RequestID, SessionID: current.SessionID, KeyID: current.KeyID,
+		PrincipalID: current.PrincipalID, CredentialHash: current.CredentialHash, PrincipalAlias: current.PrincipalAlias,
 		Summary: current.Summary, RequestedModel: current.RequestedModel, Model: current.Model,
 		Outcome: current.Outcome, StatusCode: current.StatusCode, Error: current.Error,
 		StartedAt: current.StartedAt, CompletedAt: current.CompletedAt, Facets: current.Facets,

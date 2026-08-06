@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -123,6 +124,7 @@ func main() {
 	http.HandleFunc("/ingest", s.ingest)
 	http.HandleFunc("/v1/stats", s.stats)
 	http.HandleFunc("/v1/facets", s.facets)
+	http.HandleFunc("/v1/identity-mappings", s.identityMappings)
 	http.HandleFunc("/v1/sessions", s.sessions)
 	http.HandleFunc("/v1/sessions/", s.session)
 	http.HandleFunc("/v1/requests/", s.request)
@@ -136,6 +138,36 @@ func main() {
 	addr := env("LISTEN_ADDR", ":8080")
 	log.Printf("archive collector v%s listening on %s, db=%s, store_upstream=%v", archive.Version, addr, dbPath, storeUpstream)
 	log.Fatal(http.ListenAndServe(addr, nil))
+}
+func (s *server) identityMappings(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		items, err := s.s.CredentialPrincipals(r.Context())
+		if err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		writeJSON(w, map[string]any{"mappings": items})
+	case http.MethodPut, http.MethodPost:
+		r.Body = http.MaxBytesReader(w, r.Body, 4<<20)
+		raw, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+		items, err := archive.DecodeCredentialPrincipals(raw)
+		if err != nil || len(items) == 0 {
+			http.Error(w, "invalid or empty mappings", 400)
+			return
+		}
+		if err = s.s.ApplyCredentialPrincipals(r.Context(), items); err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+		writeJSON(w, map[string]any{"updated": len(items)})
+	default:
+		http.Error(w, "method", 405)
+	}
 }
 func env(k, d string) string {
 	if v := os.Getenv(k); v != "" {

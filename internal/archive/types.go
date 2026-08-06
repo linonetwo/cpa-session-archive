@@ -9,6 +9,9 @@ type Record struct {
 	ParentResponseID string              `json:"parent_response_id,omitempty"`
 	ResponseID       string              `json:"response_id,omitempty"`
 	KeyID            string              `json:"key_id,omitempty"`
+	PrincipalID      string              `json:"principal_id,omitempty"`
+	CredentialHash   string              `json:"credential_hash,omitempty"`
+	PrincipalAlias   string              `json:"principal_alias,omitempty"`
 	Summary          string              `json:"summary,omitempty"`
 	ResponsePreview  string              `json:"response_preview,omitempty"`
 	ProjectPath      string              `json:"project_path,omitempty"`

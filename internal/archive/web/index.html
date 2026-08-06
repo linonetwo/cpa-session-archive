@@ -1246,6 +1246,8 @@
         facets = [],
         lastDetail = null,
         keyAliases = {},
+        principalAliases = {},
+        credentialsByPrincipal = {},
         sessionsByID = {},
         detailSessionID = "",
         detailPage = 1,
@@ -1299,6 +1301,8 @@
         "model.resolved",
         "model.target",
         "provider.target",
+        "principal.id",
+        "credential.hash",
         "key.id",
         "auth.group",
         "outcome",
@@ -1345,6 +1349,8 @@
         "model.target": "目标模型",
         "provider.target": "目标 Provider",
         "key.id": "调用 Key",
+        "principal.id": "稳定身份",
+        "credential.hash": "密钥版本",
         "auth.group": "凭证组",
         "auth.id": "上游凭证",
         outcome: "结果",
@@ -1395,6 +1401,8 @@
         "model.target": "Target model",
         "provider.target": "Target provider",
         "key.id": "Caller key",
+        "principal.id": "Stable identity",
+        "credential.hash": "Credential version",
         "auth.group": "Credential group",
         "auth.id": "Upstream credential",
         outcome: "Outcome",
@@ -1419,7 +1427,8 @@
         );
       }
       function facetValueLabel(name, value) {
-        if (name === "key.id" || name === "caller.scope") return keyName(value);
+        if (name === "key.id" || name === "caller.scope" || name === "credential.hash") return keyName(value);
+        if (name === "principal.id") return principalAliases[value] || value;
         var labels = {
           "request.kind": {
             turn: locale === "zh" ? "普通对话" : "Conversation turn",
@@ -1510,6 +1519,48 @@
           (value ? value.slice(0, 12) + "…" : "—")
         );
       }
+      function identityName(value) {
+        var row = value || {};
+        if (typeof row === "string") return keyName(row);
+        return (
+          row.principal_alias ||
+          principalAliases[row.principal_id] ||
+          keyName(row.credential_hash || row.key_id)
+        );
+      }
+      function credentialVersions(row) {
+        row = row || {};
+        var values = (row.credential_hashes || []).slice();
+        if (row.credential_hash && values.indexOf(row.credential_hash) < 0)
+          values.push(row.credential_hash);
+        (credentialsByPrincipal[row.principal_id] || []).forEach(function (item) {
+          var hash = item.credential_hash || item.key_hash;
+          if (hash && values.indexOf(hash) < 0) values.push(hash);
+        });
+        return values;
+      }
+      function identityCell(row) {
+        var versions = credentialVersions(row);
+        var principal = row.principal_id || "";
+        var detail = versions.length
+          ? '<details onclick="event.stopPropagation()"><summary>' +
+            versions.length +
+            " credential version" +
+            (versions.length === 1 ? "" : "s") +
+            '</summary><div class="mono">' +
+            versions.map(esc).join("<br>") +
+            "</div></details>"
+          : "";
+        return (
+          '<span class="key-pill" title="' +
+          esc(principal || row.key_id || "") +
+          '">' +
+          esc(identityName(row)) +
+          "</span>" +
+          (principal ? '<div class="muted mono">' + esc(principal) + "</div>" : "") +
+          detail
+        );
+      }
       function localTime(value) {
         var date = new Date(value);
         return isNaN(date.getTime())
@@ -1547,6 +1598,9 @@
           firstManagementJSON(
             "/v0/management/plugins/cpa-key-policy/identities",
           ),
+          firstManagementJSON(
+            "/v0/management/plugins/cpa-key-policy/credentials",
+          ),
         ]);
         (results[0].items || []).forEach(function (item) {
           keyAliases[
@@ -1559,6 +1613,21 @@
             identity.key_preview;
           if (alias && identity.caller_scope)
             keyAliases[normalizeKeyHash(identity.caller_scope)] = alias;
+          if (alias && identity.principal_id)
+            principalAliases[identity.principal_id] = alias;
+        });
+        (results[2].credentials || []).forEach(function (credential) {
+          var principal = credential.principal_id || "";
+          if (!principal) return;
+          (credentialsByPrincipal[principal] ||
+            (credentialsByPrincipal[principal] = [])).push(credential);
+          var alias =
+            keyAliases[
+              normalizeKeyHash(
+                credential.credential_hash || credential.key_hash,
+              )
+            ];
+          if (alias) principalAliases[principal] = alias;
         });
       }
       async function start() {
@@ -1790,11 +1859,9 @@
                   '</div><div class="conversation-meta">' +
                   sessionBadges.join("") +
                   esc(meta) +
-                  '</div></td><td><span class="key-pill" title="' +
-                  esc(row.key_id || "") +
-                  '">' +
-                  esc(keyName(row.key_id)) +
-                  "</span></td><td>" +
+                  "</div></td><td>" +
+                  identityCell(row) +
+                  "</td><td>" +
                   esc(row.model || "—") +
                   "</td><td>" +
                   row.requests +
@@ -1831,7 +1898,7 @@
           selected.summary || selected.project || t("untitled"),
         );
         document.getElementById("detailMeta").textContent = [
-          keyName(selected.key_id),
+          identityName(selected),
           selected.last_at && localTime(selected.last_at),
         ]
           .filter(Boolean)
@@ -1874,7 +1941,7 @@
               t("untitled"),
           );
           document.getElementById("detailMeta").textContent =
-            keyName(first.key_id || selected.key_id) +
+            identityName(first.principal_id ? first : selected) +
             " · " +
             detailTotal +
             " " +
@@ -1933,7 +2000,7 @@
           esc(
             turnStats +
               " · " +
-              [keyName(turn.key_id), turn.model, localTime(turn.last_at)]
+              [identityName(turn), turn.model, localTime(turn.last_at)]
                 .filter(Boolean)
                 .join(" · "),
           ) +
@@ -1984,7 +2051,7 @@
         document.getElementById("turnTitle").textContent =
           titleText.length > 180 ? titleText.slice(0, 180) + "…" : titleText;
         document.getElementById("turnMeta").textContent = [
-          keyName(turn.key_id),
+          identityName(turn),
           turn.model,
           localTime(turn.last_at),
         ]
@@ -2238,7 +2305,7 @@
           esc(
             [
               record.requested_model || record.model,
-              keyName(record.key_id),
+              identityName(record),
               tools.length ? t("toolRole") + ": " + tools.join(", ") : "",
             ]
               .filter(Boolean)
@@ -2304,7 +2371,7 @@
           view.summary || view.requested_model || view.model || t("request"),
         );
         document.getElementById("requestMeta").textContent = [
-          keyName(view.key_id),
+          identityName(view),
           view.requested_model || view.model,
           localTime(view.started_at),
         ]

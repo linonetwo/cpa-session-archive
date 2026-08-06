@@ -14,19 +14,22 @@ import (
 )
 
 type TurnSummary struct {
-	TurnID       string   `json:"turn_id"`
-	SessionID    string   `json:"session_id"`
-	UserText     string   `json:"user_text,omitempty"`
-	FinalText    string   `json:"final_text,omitempty"`
-	Requests     int      `json:"requests"`
-	FirstAt      time.Time `json:"first_at"`
-	LastAt       time.Time `json:"last_at"`
-	KeyID        string   `json:"key_id,omitempty"`
-	Model        string   `json:"model,omitempty"`
-	Outcome      string   `json:"outcome,omitempty"`
-	StatusCode   int      `json:"status_code,omitempty"`
-	ToolNames    []string `json:"tool_names,omitempty"`
-	HasCompaction bool    `json:"has_compaction,omitempty"`
+	TurnID         string    `json:"turn_id"`
+	SessionID      string    `json:"session_id"`
+	UserText       string    `json:"user_text,omitempty"`
+	FinalText      string    `json:"final_text,omitempty"`
+	Requests       int       `json:"requests"`
+	FirstAt        time.Time `json:"first_at"`
+	LastAt         time.Time `json:"last_at"`
+	KeyID          string    `json:"key_id,omitempty"`
+	PrincipalID    string    `json:"principal_id,omitempty"`
+	CredentialHash string    `json:"credential_hash,omitempty"`
+	PrincipalAlias string    `json:"principal_alias,omitempty"`
+	Model          string    `json:"model,omitempty"`
+	Outcome        string    `json:"outcome,omitempty"`
+	StatusCode     int       `json:"status_code,omitempty"`
+	ToolNames      []string  `json:"tool_names,omitempty"`
+	HasCompaction  bool      `json:"has_compaction,omitempty"`
 }
 
 type TurnPage struct {
@@ -37,11 +40,11 @@ type TurnPage struct {
 }
 
 type TurnDetailPage struct {
-	Turn    TurnSummary          `json:"turn"`
+	Turn    TurnSummary           `json:"turn"`
 	Records []RequestTimelineView `json:"records"`
-	Total   int                  `json:"total"`
-	Limit   int                  `json:"limit"`
-	Offset  int                  `json:"offset"`
+	Total   int                   `json:"total"`
+	Limit   int                   `json:"limit"`
+	Offset  int                   `json:"offset"`
 }
 
 type turnGroup struct {
@@ -192,7 +195,9 @@ func (s *Store) sessionTurnGroups(ctx context.Context, sessionID string) ([]turn
 			COALESCE(json_extract(r.facets_json,'$."request.kind"'),'[]')`
 	}
 	rows, err := s.DB.QueryContext(ctx, `SELECT
-		r.request_id,COALESCE(r.key_id,''),COALESCE(r.summary,''),COALESCE(r.response_preview,''),
+		r.request_id,COALESCE(r.key_id,''),COALESCE(r.principal_id,''),COALESCE(r.credential_hash,''),
+		COALESCE((SELECT alias FROM credential_principals p WHERE p.principal_id=r.principal_id AND alias<>'' ORDER BY updated_at DESC LIMIT 1),''),
+		COALESCE(r.summary,''),COALESCE(r.response_preview,''),
 		COALESCE(r.requested_model,''),COALESCE(r.model,''),COALESCE(r.outcome,''),r.status_code,
 		r.started_at,r.completed_at,
 		`+facetColumns+`
@@ -203,11 +208,11 @@ func (s *Store) sessionTurnGroups(ctx context.Context, sessionID string) ([]turn
 	defer rows.Close()
 	groups := []turnGroup{}
 	for rows.Next() {
-		var requestID, keyID, summary, responsePreview, requestedModel, model, outcome, startedRaw, completedRaw string
+		var requestID, keyID, principalID, credentialHash, principalAlias, summary, responsePreview, requestedModel, model, outcome, startedRaw, completedRaw string
 		var explicitID, toolNamesRaw, requestKindsRaw string
 		var statusCode int
 		if err = rows.Scan(
-			&requestID, &keyID, &summary, &responsePreview, &requestedModel, &model,
+			&requestID, &keyID, &principalID, &credentialHash, &principalAlias, &summary, &responsePreview, &requestedModel, &model,
 			&outcome, &statusCode, &startedRaw, &completedRaw, &explicitID,
 			&toolNamesRaw, &requestKindsRaw,
 		); err != nil {
@@ -234,7 +239,7 @@ func (s *Store) sessionTurnGroups(ctx context.Context, sessionID string) ([]turn
 				turnID = derivedTurnID(sessionID, requestID)
 			}
 			groups = append(groups, turnGroup{
-				summary: TurnSummary{TurnID: turnID, SessionID: sessionID, UserText: cleanTurnText(summary), FirstAt: startedAt, LastAt: completedAt, KeyID: keyID, Model: firstNonEmpty(requestedModel, model), ToolNames: []string{}},
+				summary:    TurnSummary{TurnID: turnID, SessionID: sessionID, UserText: cleanTurnText(summary), FirstAt: startedAt, LastAt: completedAt, KeyID: keyID, PrincipalID: principalID, CredentialHash: credentialHash, PrincipalAlias: principalAlias, Model: firstNonEmpty(requestedModel, model), ToolNames: []string{}},
 				explicitID: explicitID, normalizedSummary: normalized, toolNames: map[string]struct{}{},
 			})
 		}
@@ -254,6 +259,13 @@ func (s *Store) sessionTurnGroups(ctx context.Context, sessionID string) ([]turn
 		current.summary.StatusCode = statusCode
 		if keyID != "" {
 			current.summary.KeyID = keyID
+		}
+		if principalID != "" {
+			current.summary.PrincipalID = principalID
+			current.summary.PrincipalAlias = principalAlias
+		}
+		if credentialHash != "" {
+			current.summary.CredentialHash = credentialHash
 		}
 		if selectedModel := firstNonEmpty(requestedModel, model); selectedModel != "" {
 			current.summary.Model = selectedModel

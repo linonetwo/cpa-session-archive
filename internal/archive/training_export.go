@@ -18,6 +18,8 @@ type SFTExample struct {
 	Messages          []map[string]any `json:"messages"`
 	Tools             any              `json:"tools,omitempty"`
 	ParallelToolCalls *bool            `json:"parallel_tool_calls,omitempty"`
+	PrincipalID       string           `json:"principal_id,omitempty"`
+	CredentialHash    string           `json:"credential_hash,omitempty"`
 }
 
 func (s *Store) ExportTrainingJSONL(ctx context.Context, sessionID string, dst io.Writer) error {
@@ -58,6 +60,8 @@ func (s *Store) ExportTrainingJSONL(ctx context.Context, sessionID string, dst i
 		if !ok {
 			continue
 		}
+		example.PrincipalID = record.PrincipalID
+		example.CredentialHash = record.CredentialHash
 		if err = enc.Encode(example); err != nil {
 			return err
 		}

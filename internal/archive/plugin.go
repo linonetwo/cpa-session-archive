@@ -190,14 +190,29 @@ func (p *Plugin) captureRequest(r intercept, afterAuth bool) {
 	s.SessionID = sessionID(&s.Record, r.Metadata, s.OriginalRequest, s.UpstreamRequest)
 	s.ParentResponseID = firstJSON(s.OriginalRequest, s.UpstreamRequest, "previous_response_id")
 	keyID := archiveKeyID(r.Metadata)
+	principalID := findString(r.Metadata, "principal_id")
+	credentialHash := firstNonEmpty(
+		findString(r.Metadata, "credential_hash"),
+		findString(r.Metadata, "key_hash"),
+		findString(r.Metadata, "api_key_hash"),
+	)
 	if headerKeyID := nativeKeyHash(r.Headers); headerKeyID != "" {
 		keyID = headerKeyID
+		if credentialHash == "" {
+			credentialHash = headerKeyID
+		}
 	}
 	// The post-auth hook may no longer carry the Authorization header and its
 	// metadata can contain only the host-salted caller_scope. Never downgrade a
 	// native identity captured by the initial request hook.
 	if s.KeyID == "" || keyID != findString(r.Metadata, "caller_scope") {
 		s.KeyID = keyID
+	}
+	if principalID != "" {
+		s.PrincipalID = principalID
+	}
+	if credentialHash != "" {
+		s.CredentialHash = credentialHash
 	}
 }
 func (p *Plugin) captureResponse(r intercept) {
@@ -349,6 +364,8 @@ func addCompletionFacets(rec *Record) {
 	add("source.format", rec.SourceFormat)
 	add("outcome", rec.Outcome)
 	add("key.id", rec.KeyID)
+	add("principal.id", rec.PrincipalID)
+	add("credential.hash", rec.CredentialHash)
 	if rec.Metadata != nil {
 		add("provider.target", findString(rec.Metadata, "target_provider"))
 		add("model.target", findString(rec.Metadata, "target_model"))
