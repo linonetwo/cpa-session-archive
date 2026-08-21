@@ -107,6 +107,40 @@ func OpenStore(path string, storeUpstream bool) (*Store, error) {
 		return nil, e
 	}
 	_, _ = db.Exec(`ALTER TABLE previewed_requests ADD COLUMN version INTEGER NOT NULL DEFAULT 1`)
+	if _, e = db.Exec(`CREATE TABLE IF NOT EXISTS archive_ingest_clock(
+		id INTEGER PRIMARY KEY CHECK(id=1),
+		sequence INTEGER NOT NULL
+	);
+	INSERT OR IGNORE INTO archive_ingest_clock(id,sequence) SELECT 1,COALESCE(MAX(id),0) FROM records;
+	CREATE TABLE IF NOT EXISTS archive_ingest_events(
+		sequence INTEGER PRIMARY KEY,
+		request_id TEXT NOT NULL,
+		session_id TEXT NOT NULL,
+		recorded_at TEXT NOT NULL
+	);
+	CREATE INDEX IF NOT EXISTS idx_archive_ingest_events_session_sequence ON archive_ingest_events(session_id,sequence);
+	CREATE INDEX IF NOT EXISTS idx_archive_ingest_events_request_sequence ON archive_ingest_events(request_id,sequence);
+	CREATE TABLE IF NOT EXISTS session_export_digests(
+		session_id TEXT PRIMARY KEY,
+		requests INTEGER NOT NULL,
+		first_at TEXT NOT NULL,
+		last_at TEXT NOT NULL,
+		records_sha256 TEXT NOT NULL,
+		max_ingest_sequence INTEGER NOT NULL,
+		updated_at TEXT NOT NULL
+	);
+	CREATE TRIGGER IF NOT EXISTS archive_records_insert AFTER INSERT ON records BEGIN
+		UPDATE archive_ingest_clock SET sequence=sequence+1 WHERE id=1;
+		INSERT INTO archive_ingest_events(sequence,request_id,session_id,recorded_at)
+			SELECT sequence,NEW.request_id,NEW.session_id,strftime('%Y-%m-%dT%H:%M:%fZ','now') FROM archive_ingest_clock WHERE id=1;
+	END;
+	CREATE TRIGGER IF NOT EXISTS archive_records_update AFTER UPDATE ON records BEGIN
+		UPDATE archive_ingest_clock SET sequence=sequence+1 WHERE id=1;
+		INSERT INTO archive_ingest_events(sequence,request_id,session_id,recorded_at)
+			SELECT sequence,NEW.request_id,NEW.session_id,strftime('%Y-%m-%dT%H:%M:%fZ','now') FROM archive_ingest_clock WHERE id=1;
+	END`); e != nil {
+		return nil, e
+	}
 	s := &Store{DB: db, DBPath: path, StoreUpstream: storeUpstream}
 	return s, nil
 }
@@ -225,13 +259,23 @@ func (s *Store) PutBatch(batch []Record) error {
 	}
 	return tx.Commit()
 }
+
+type queryContext interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
 func (s *Store) loadBlob(hash string) ([]byte, error) {
+	return loadBlobWithQuery(context.Background(), s.DB, hash)
+}
+
+func loadBlobWithQuery(ctx context.Context, q queryContext, hash string) ([]byte, error) {
 	if hash == "" {
 		return nil, nil
 	}
 	var data []byte
 	var codec string
-	if e := s.DB.QueryRow(`SELECT codec,data FROM blobs WHERE hash=?`, hash).Scan(&codec, &data); e != nil {
+	if e := q.QueryRowContext(ctx, `SELECT codec,data FROM blobs WHERE hash=?`, hash).Scan(&codec, &data); e != nil {
 		return nil, e
 	}
 	if codec == "gzip" {
@@ -240,11 +284,15 @@ func (s *Store) loadBlob(hash string) ([]byte, error) {
 	return data, nil
 }
 func (s *Store) LoadPayload(hash string) ([]byte, error) {
-	m, e := s.loadBlob(hash)
+	return loadPayloadWithQuery(context.Background(), s.DB, hash)
+}
+
+func loadPayloadWithQuery(ctx context.Context, q queryContext, hash string) ([]byte, error) {
+	m, e := loadBlobWithQuery(ctx, q, hash)
 	if e != nil {
 		return nil, e
 	}
-	return ExpandPayload(m, s.loadBlob)
+	return ExpandPayload(m, func(ref string) ([]byte, error) { return loadBlobWithQuery(ctx, q, ref) })
 }
 func facetsJSON(v map[string][]string) string {
 	if v == nil {
@@ -500,11 +548,15 @@ func (s *Store) Session(ctx context.Context, id string) ([]Record, error) {
 }
 
 func (s *Store) Request(ctx context.Context, id string) (Record, error) {
+	return s.requestWithQuery(ctx, s.DB, id)
+}
+
+func (s *Store) requestWithQuery(ctx context.Context, q queryContext, id string) (Record, error) {
 	var x Record
 	var stream, trunc int
 	var started, done, meta, facets, or, ur, rr, sessionID string
 	var oldO, oldU, oldR []byte
-	err := s.DB.QueryRowContext(ctx, `SELECT session_id,request_id,trace_id,COALESCE(key_id,''),COALESCE(principal_id,''),COALESCE(credential_hash,''),
+	err := q.QueryRowContext(ctx, `SELECT session_id,request_id,trace_id,COALESCE(key_id,''),COALESCE(principal_id,''),COALESCE(credential_hash,''),
 		COALESCE((SELECT alias FROM credential_principals p WHERE p.principal_id=records.principal_id AND alias<>'' ORDER BY updated_at DESC LIMIT 1),''),
 		COALESCE(summary,''),COALESCE(response_preview,''),COALESCE(source_format,''),COALESCE(requested_model,''),COALESCE(model,''),stream,COALESCE(outcome,''),status_code,COALESCE(error,''),started_at,completed_at,COALESCE(parent_response_id,''),COALESCE(response_id,''),COALESCE(original_ref,''),COALESCE(upstream_ref,''),COALESCE(response_ref,''),truncated,COALESCE(metadata_json,''),COALESCE(facets_json,''),original_request_gz,upstream_request_gz,response_gz FROM records WHERE request_id=? LIMIT 1`, id).Scan(&sessionID, &x.RequestID, &x.TraceID, &x.KeyID, &x.PrincipalID, &x.CredentialHash, &x.PrincipalAlias, &x.Summary, &x.ResponsePreview, &x.SourceFormat, &x.RequestedModel, &x.Model, &stream, &x.Outcome, &x.StatusCode, &x.Error, &started, &done, &x.ParentResponseID, &x.ResponseID, &or, &ur, &rr, &trunc, &meta, &facets, &oldO, &oldU, &oldR)
 	if err != nil {
@@ -516,7 +568,7 @@ func (s *Store) Request(ctx context.Context, id string) (Record, error) {
 	x.StartedAt, _ = time.Parse(time.RFC3339Nano, started)
 	x.CompletedAt, _ = time.Parse(time.RFC3339Nano, done)
 	if or != "" {
-		x.OriginalRequest, err = s.LoadPayload(or)
+		x.OriginalRequest, err = loadPayloadWithQuery(ctx, q, or)
 	} else {
 		x.OriginalRequest = gunzipBytes(oldO)
 	}
@@ -524,7 +576,7 @@ func (s *Store) Request(ctx context.Context, id string) (Record, error) {
 		return x, err
 	}
 	if ur != "" {
-		x.UpstreamRequest, err = s.LoadPayload(ur)
+		x.UpstreamRequest, err = loadPayloadWithQuery(ctx, q, ur)
 	} else if s.StoreUpstream {
 		x.UpstreamRequest = gunzipBytes(oldU)
 	}
@@ -532,7 +584,7 @@ func (s *Store) Request(ctx context.Context, id string) (Record, error) {
 		return x, err
 	}
 	if rr != "" {
-		x.Response, err = s.LoadPayload(rr)
+		x.Response, err = loadPayloadWithQuery(ctx, q, rr)
 	} else {
 		x.Response = gunzipBytes(oldR)
 	}

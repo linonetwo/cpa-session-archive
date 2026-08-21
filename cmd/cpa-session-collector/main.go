@@ -18,20 +18,26 @@ import (
 )
 
 type server struct {
-	s            *archive.Store
-	q            chan archive.Record
-	ticketMu     sync.Mutex
-	tickets      map[string]exportTicket
-	turnTextMu   sync.Mutex
-	turnTextJobs map[string]bool
+	s                   *archive.Store
+	q                   chan archive.Record
+	ticketMu            sync.Mutex
+	tickets             map[string]exportTicket
+	turnTextMu          sync.Mutex
+	turnTextJobs        map[string]bool
+	snapshotOnce        sync.Once
+	snapshotRegistry    *stableSnapshotRegistry
+	snapshotRegistryErr error
 }
 
 type exportTicket struct {
-	SessionID string
-	Scope     string
-	Format    string
-	Filename  string
-	ExpiresAt time.Time
+	SessionID    string
+	Scope        string
+	Format       string
+	Filename     string
+	ExpiresAt    time.Time
+	Snapshot     string
+	RecordsSHA256 string
+	CursorProtocol string
 }
 
 func main() {
@@ -120,6 +126,7 @@ func main() {
 	}
 	s := &server{s: st, q: make(chan archive.Record, 4096), tickets: map[string]exportTicket{}, turnTextJobs: map[string]bool{}}
 	go s.writer()
+	go s.digestRefresher()
 	http.HandleFunc("/healthz", s.health)
 	http.HandleFunc("/ingest", s.ingest)
 	http.HandleFunc("/v1/stats", s.stats)
@@ -241,6 +248,10 @@ func (s *server) flush(batch []archive.Record) {
 	}
 }
 func (s *server) sessions(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Has("cursor_protocol") {
+		s.stableSessions(w, r)
+		return
+	}
 	limit := 100
 	if v, e := strconv.Atoi(r.URL.Query().Get("limit")); e == nil && v > 0 && v <= 1000 {
 		limit = v
@@ -489,9 +500,41 @@ func (s *server) exportTicket(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "session required", 400)
 		return
 	}
+	snapshotID := strings.TrimSpace(r.URL.Query().Get("snapshot"))
+	recordsSHA256 := ""
+	cursorProtocol := ""
+	var stableEntry *stableSnapshotEntry
+	if snapshotID != "" {
+		if scope != "session" || format != "archive" || len(snapshotID) > 128 {
+			stableError(w, http.StatusBadRequest, "invalid stable snapshot export")
+			return
+		}
+		registry, err := s.stableRegistry()
+		if err != nil {
+			stableError(w, http.StatusServiceUnavailable, "stable session snapshots are unavailable")
+			return
+		}
+		stableEntry, err = registry.getForExport(snapshotID)
+		if err != nil {
+			stableError(w, http.StatusGone, "stable session snapshot expired")
+			return
+		}
+		summary, found := stableEntry.Snapshot.Summary(sessionID)
+		if !found {
+			stableError(w, http.StatusNotFound, "session not found in snapshot")
+			return
+		}
+		recordsSHA256 = summary.RecordsSHA256
+		cursorProtocol = archive.StableCursorProtocol
+	}
 	if scope == "session" {
 		var exists int
-		if err := s.s.DB.QueryRowContext(r.Context(), `SELECT 1 FROM records WHERE session_id=? LIMIT 1`, sessionID).Scan(&exists); err != nil {
+		if snapshotID == "" {
+			if err := s.s.DB.QueryRowContext(r.Context(), `SELECT 1 FROM records WHERE session_id=? LIMIT 1`, sessionID).Scan(&exists); err != nil {
+				http.Error(w, "session not found", 404)
+				return
+			}
+		} else if stableEntry == nil {
 			http.Error(w, "session not found", 404)
 			return
 		}
@@ -517,9 +560,18 @@ func (s *server) exportTicket(w http.ResponseWriter, r *http.Request) {
 	}
 	name += "-" + format + ".jsonl"
 	expiresAt := now.Add(30 * time.Minute)
-	s.tickets[token] = exportTicket{SessionID: sessionID, Scope: scope, Format: format, Filename: name, ExpiresAt: expiresAt}
+	if stableEntry != nil && stableEntry.ExpiresAt.Before(expiresAt) {
+		expiresAt = stableEntry.ExpiresAt
+	}
+	s.tickets[token] = exportTicket{SessionID: sessionID, Scope: scope, Format: format, Filename: name, ExpiresAt: expiresAt, Snapshot: snapshotID, RecordsSHA256: recordsSHA256, CursorProtocol: cursorProtocol}
 	s.ticketMu.Unlock()
-	writeJSON(w, map[string]any{"url": "/archive-api/v1/exports/" + token, "filename": name, "content_type": "application/x-ndjson", "expires_at": expiresAt})
+	response := map[string]any{"url": "/archive-api/v1/exports/" + token, "filename": name, "content_type": "application/x-ndjson", "expires_at": expiresAt}
+	if snapshotID != "" {
+		response["cursor_protocol"] = cursorProtocol
+		response["snapshot"] = snapshotID
+		response["records_sha256"] = recordsSHA256
+	}
+	writeJSON(w, response)
 }
 func (s *server) ticketedExport(w http.ResponseWriter, r *http.Request) {
 	token := strings.TrimPrefix(r.URL.Path, "/archive-api/v1/exports/")
@@ -553,6 +605,8 @@ func (s *server) ticketedExport(w http.ResponseWriter, r *http.Request) {
 	var e error
 	if ticket.Format == "sft" {
 		e = s.s.ExportTrainingJSONL(r.Context(), map[bool]string{true: ticket.SessionID, false: ""}[ticket.Scope == "session"], w)
+	} else if ticket.Snapshot != "" {
+		e = s.exportStableSnapshot(w, r, ticket)
 	} else {
 		e = s.s.ExportArchiveJSONL(r.Context(), map[bool]string{true: ticket.SessionID, false: ""}[ticket.Scope == "session"], w)
 	}
@@ -586,7 +640,17 @@ func (s *server) stats(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, e.Error(), 500)
 		return
 	}
-	writeJSON(w, out)
+	writeJSON(w, struct {
+		archive.Stats
+		SessionCursorProtocols []string `json:"session_cursor_protocols"`
+		SnapshotTTLSeconds     int64    `json:"snapshot_ttl_seconds"`
+		MaxActiveSnapshots    int      `json:"max_active_snapshots"`
+	}{
+		Stats:                  out,
+		SessionCursorProtocols: []string{archive.StableCursorProtocol},
+		SnapshotTTLSeconds:     int64(durationEnv("ARCHIVE_SNAPSHOT_TTL", 2*time.Hour, time.Minute, 6*time.Hour).Seconds()),
+		MaxActiveSnapshots:    integerEnv("ARCHIVE_MAX_ACTIVE_SNAPSHOTS", 2, 1, 8),
+	})
 }
 func (s *server) gc(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
