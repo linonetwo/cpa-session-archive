@@ -184,7 +184,7 @@ func TestStableSessionsHTTPContractFailsClosedAndReplays(t *testing.T) {
 	if response.Code != http.StatusGone {
 		t.Fatalf("expired snapshot status=%d", response.Code)
 	}
-	if _, _, err := registry.resolveCursor(&stableSnapshotEntry{ID: "missing"}, *first.NextCursor); err == nil {
+	if _, err := registry.resolveCursor(&stableSnapshotEntry{ID: "missing"}, *first.NextCursor); err == nil {
 		t.Fatal("expired cursor unexpectedly resolved")
 	}
 }
