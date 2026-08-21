@@ -1,0 +1,117 @@
+name: temporary-cpa-session-archive-0.8.0-harbor
+on:
+  push:
+    branches: [chore/forgejo-harbor-0.8.0]
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  IMAGE: harbor.k3s.onetwo.website/mtc-ci/cpa-session-archive
+  BUILDKIT_HOST: unix:///run/user/1000/buildkit/buildkitd.sock
+jobs:
+  quality:
+    runs-on: mtc-quality-pod
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: "1.24.x", cache: true }
+      - uses: actions/setup-node@v4
+        with: { node-version: "22" }
+      - uses: pnpm/action-setup@v4
+        with: { version: "11" }
+      - run: sudo apt-get update && sudo apt-get install -y gcc libc6-dev
+      - run: bash tests/ops/temporary_forgejo_harbor_contract.sh
+      - name: Formatting and static analysis
+        run: |
+          test -z "$(gofmt -l .)"
+          go vet ./...
+      - name: Complete SQLite and security suite
+        run: go test -count=1 ./...
+      - name: Race detector
+        run: go test -count=1 -race ./...
+      - name: Online cursor, WAL and resource bounds
+        run: |
+          go test -count=1 ./internal/archive -run 'Test(StableSnapshotPaginatesTiesAndExcludesLaterWrites|StableSnapshotExportIsCanonicalAndSnapshotBound|ClosingStableSnapshotReleasesWALCheckpoint|StableSnapshotQueuesOnlyRequestedMissingDigests)$'
+          go test -count=1 ./cmd/cpa-session-collector -run 'Test(StableSessionsHTTPContractFailsClosedAndReplays|StableSnapshotTicketExportsExactSnapshot|FullSnapshotRequiresOfflineOptIn)$'
+      - run: python3 -m unittest scripts.test_migrate_attribution
+      - name: Browser contract
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm exec playwright install --with-deps chromium
+          pnpm test:e2e
+      - name: Release binaries
+        run: |
+          CGO_ENABLED=1 go build -tags cshared -buildmode=c-shared -o /tmp/cpa-session-archive.so ./cmd/cpa-session-archive
+          CGO_ENABLED=1 go build -o /tmp/cpa-session-collector ./cmd/cpa-session-collector
+  release:
+    needs: quality
+    runs-on: mtc-release-rootless
+    timeout-minutes: 45
+    env:
+      HARBOR_USERNAME: ${{ secrets.HARBOR_USERNAME }}
+      HARBOR_PASSWORD: ${{ secrets.HARBOR_PASSWORD }}
+      COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+      COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+      COSIGN_PUBLIC_KEY: ${{ secrets.COSIGN_PUBLIC_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: "1.24.x", cache: false }
+      - name: Validate immutable release inputs
+        run: |
+          set -euo pipefail
+          test "$(printf '%s' "${GITHUB_SHA}" | grep -Ec '^[0-9a-f]{40}$')" = 1
+          test -n "${HARBOR_USERNAME}"
+          test -n "${HARBOR_PASSWORD}"
+          test -n "${COSIGN_PRIVATE_KEY}"
+          test -n "${COSIGN_PASSWORD}"
+          test -n "${COSIGN_PUBLIC_KEY}"
+          test -S "${BUILDKIT_HOST#unix://}"
+          command -v buildctl
+          command -v syft
+          command -v trivy
+          command -v cosign
+      - name: Authenticate Harbor without a daemon
+        run: |
+          set -euo pipefail
+          export DOCKER_CONFIG="${RUNNER_TEMP}/registry-auth"
+          mkdir -p "${DOCKER_CONFIG}"
+          chmod 0700 "${DOCKER_CONFIG}"
+          GOBIN="${RUNNER_TEMP}/bin" go install github.com/google/go-containerregistry/cmd/crane@v0.20.6
+          printf '%s' "${HARBOR_PASSWORD}" | "${RUNNER_TEMP}/bin/crane" auth login harbor.k3s.onetwo.website --username "${HARBOR_USERNAME}" --password-stdin
+          echo "DOCKER_CONFIG=${DOCKER_CONFIG}" >> "${GITHUB_ENV}"
+          echo "CRANE=${RUNNER_TEMP}/bin/crane" >> "${GITHUB_ENV}"
+      - name: Build and push full-SHA image
+        run: |
+          set -euo pipefail
+          buildctl --addr "${BUILDKIT_HOST}" build +            --frontend dockerfile.v0 +            --local context=. +            --local dockerfile=. +            --opt filename=Dockerfile +            --output "type=image,name=${IMAGE}:${GITHUB_SHA},push=true" +            --attest type=sbom +            --attest type=provenance,mode=max +            --metadata-file build-metadata.json
+          digest="$(python3 -c 'import json; print(json.load(open("build-metadata.json"))["containerimage.digest"])')"
+          printf '%s' "${digest}" | grep -Eq '^sha256:[0-9a-f]{64}$'
+          test "$("${CRANE}" digest "${IMAGE}:${GITHUB_SHA}")" = "${digest}"
+          echo "IMAGE_DIGEST=${digest}" >> "${GITHUB_ENV}"
+      - name: Generate and scan immutable SBOM
+        run: |
+          set -euo pipefail
+          syft "${IMAGE}@${IMAGE_DIGEST}" -o cyclonedx-json=sbom.cdx.json
+          test -s sbom.cdx.json
+          trivy image --exit-code 1 --ignore-unfixed --severity HIGH,CRITICAL "${IMAGE}@${IMAGE_DIGEST}"
+      - name: Sign, attest and verify by digest
+        run: |
+          set -euo pipefail
+          umask 077
+          key="${RUNNER_TEMP}/cosign.key"
+          public_key="${RUNNER_TEMP}/cosign.pub"
+          printf '%s' "${COSIGN_PRIVATE_KEY}" > "${key}"
+          printf '%s' "${COSIGN_PUBLIC_KEY}" > "${public_key}"
+          cosign sign --yes --key "${key}" "${IMAGE}@${IMAGE_DIGEST}"
+          cosign attest --yes --key "${key}" --type cyclonedx --predicate sbom.cdx.json "${IMAGE}@${IMAGE_DIGEST}"
+          cosign verify --key "${public_key}" "${IMAGE}@${IMAGE_DIGEST}" > signature-verification.json
+          cosign verify-attestation --key "${public_key}" --type cyclonedx "${IMAGE}@${IMAGE_DIGEST}" > attestation-verification.json
+          test -s signature-verification.json
+          test -s attestation-verification.json
+          rm -f "${key}" "${public_key}"
+      - name: Emit non-secret release proof
+        run: |
+          printf '{"commit":"%s","digest":"%s","image":"%s","sbom":"cyclonedx","verified":true}\n' +            "${GITHUB_SHA}" "${IMAGE_DIGEST}" "${IMAGE}"
+

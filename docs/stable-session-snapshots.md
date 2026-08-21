@@ -5,6 +5,29 @@ incremental archive migration. The legacy `GET /v1/sessions` list and legacy
 export tickets remain unchanged unless the stable protocol is explicitly
 requested.
 
+## Token Center collector-direct integration
+
+Token Center must connect to this standalone collector with its
+`--collector-direct <private-base-url>` adapter. The base URL is the collector
+origin itself; do not add a CPA management compatibility alias or an Nginx
+rewrite. Keep the collector private because it has no bearer-token middleware.
+The opaque token in a returned `/archive-api/v1/exports/<token>` URL is the
+short-lived download capability and must not be logged or exposed publicly.
+
+The direct adapter discovers support through `GET /v1/stats`, creates or
+continues snapshots through `GET /v1/sessions`, creates snapshot-bound
+tickets through `GET /v1/export-tickets`, and downloads the returned relative
+URL from the same origin. It must preserve the exact query bounds and
+`after_ingest_fence` until a complete projection and every per-session digest
+are verified. HTTP 503 means retry digest preparation, 410 means restart from
+the last committed target checkpoint, and 429 means wait for snapshot
+capacity. Never advance the target checkpoint on any of those responses.
+
+The only full-snapshot switch is
+`ARCHIVE_ALLOW_OFFLINE_FULL_SNAPSHOT=true`. It is for an isolated same-storage
+clone, never the actively written source. Normal online runs leave it false and
+use a prior ingest fence plus an explicit timestamp overlap.
+
 ## HTTP contract
 
 Create a delta snapshot with:
