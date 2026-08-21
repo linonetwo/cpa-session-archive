@@ -27,6 +27,7 @@ type server struct {
 	snapshotOnce        sync.Once
 	snapshotRegistry    *stableSnapshotRegistry
 	snapshotRegistryErr error
+	allowOfflineFull    bool
 }
 
 type exportTicket struct {
@@ -640,16 +641,29 @@ func (s *server) stats(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, e.Error(), 500)
 		return
 	}
+	registry, registryErr := s.stableRegistry()
+	activeSnapshots, oldestSnapshotAge := 0, int64(0)
+	if registryErr == nil {
+		activeSnapshots, oldestSnapshotAge = registry.diagnostics()
+	}
 	writeJSON(w, struct {
 		archive.Stats
 		SessionCursorProtocols []string `json:"session_cursor_protocols"`
 		SnapshotTTLSeconds     int64    `json:"snapshot_ttl_seconds"`
+		SnapshotIdleTTLSeconds int64    `json:"snapshot_idle_ttl_seconds"`
 		MaxActiveSnapshots    int      `json:"max_active_snapshots"`
+		ActiveSnapshots       int      `json:"active_snapshots"`
+		OldestSnapshotAge     int64    `json:"oldest_snapshot_age_seconds"`
+		OfflineFullEnabled    bool     `json:"offline_full_snapshot_enabled"`
 	}{
 		Stats:                  out,
 		SessionCursorProtocols: []string{archive.StableCursorProtocol},
-		SnapshotTTLSeconds:     int64(durationEnv("ARCHIVE_SNAPSHOT_TTL", 2*time.Hour, time.Minute, 6*time.Hour).Seconds()),
-		MaxActiveSnapshots:    integerEnv("ARCHIVE_MAX_ACTIVE_SNAPSHOTS", 2, 1, 8),
+		SnapshotTTLSeconds:     int64(registryTTL(s.allowOfflineFull).Seconds()),
+		SnapshotIdleTTLSeconds: int64(stableSnapshotIdleTTL.Seconds()),
+		MaxActiveSnapshots:    stableMaxActiveSnapshots,
+		ActiveSnapshots:       activeSnapshots,
+		OldestSnapshotAge:     oldestSnapshotAge,
+		OfflineFullEnabled:    s.allowOfflineFull,
 	})
 }
 func (s *server) gc(w http.ResponseWriter, r *http.Request) {

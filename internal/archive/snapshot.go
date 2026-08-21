@@ -74,7 +74,7 @@ func (s *Store) BeginStableSessionSnapshot(lowerBound time.Time, afterIngestFenc
 		   OR julianday(r.completed_at)>=julianday(?)
 		   OR EXISTS(
 				SELECT 1 FROM archive_ingest_events changed
-				WHERE changed.request_id=r.request_id AND changed.sequence>? AND changed.sequence<=?
+				WHERE changed.session_id=r.session_id AND changed.sequence>? AND changed.sequence<=?
 		   )
 	)
 	SELECT r.session_id,COUNT(*),MIN(r.started_at),MAX(r.completed_at),
@@ -120,6 +120,12 @@ func (s *Store) BeginStableSessionSnapshot(lowerBound time.Time, afterIngestFenc
 	if err = rows.Err(); err != nil {
 		return nil, err
 	}
+	sort.SliceStable(sessions, func(left, right int) bool {
+		if sessions[left].LastAt != sessions[right].LastAt {
+			return sessions[left].LastAt > sessions[right].LastAt
+		}
+		return sessions[left].SessionID < sessions[right].SessionID
+	})
 	setDigest, err := stableSessionSetDigest(sessions)
 	if err != nil {
 		return nil, err

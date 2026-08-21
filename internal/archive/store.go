@@ -134,6 +134,11 @@ func OpenStore(path string, storeUpstream bool) (*Store, error) {
 		INSERT INTO archive_ingest_events(sequence,request_id,session_id,recorded_at)
 			SELECT sequence,NEW.request_id,NEW.session_id,strftime('%Y-%m-%dT%H:%M:%fZ','now') FROM archive_ingest_clock WHERE id=1;
 	END;
+	CREATE TRIGGER IF NOT EXISTS archive_records_delete AFTER DELETE ON records BEGIN
+		UPDATE archive_ingest_clock SET sequence=sequence+1 WHERE id=1;
+		INSERT INTO archive_ingest_events(sequence,request_id,session_id,recorded_at)
+			SELECT sequence,OLD.request_id,OLD.session_id,strftime('%Y-%m-%dT%H:%M:%fZ','now') FROM archive_ingest_clock WHERE id=1;
+	END;
 	CREATE TRIGGER IF NOT EXISTS archive_records_update AFTER UPDATE ON records BEGIN
 		UPDATE archive_ingest_clock SET sequence=sequence+1 WHERE id=1;
 		INSERT INTO archive_ingest_events(sequence,request_id,session_id,recorded_at)

@@ -9,9 +9,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -23,6 +23,13 @@ import (
 var (
 	errStableSnapshotExpired = errors.New("stable session snapshot expired")
 	errStableSnapshotLimit   = errors.New("stable session snapshot capacity reached")
+)
+
+const (
+	stableSnapshotTTL        = 15 * time.Minute
+	stableOfflineSnapshotTTL = 6 * time.Hour
+	stableSnapshotIdleTTL    = 2 * time.Minute
+	stableMaxActiveSnapshots = 1
 )
 
 type stableCursorClaims struct {
@@ -39,6 +46,8 @@ type stableSnapshotEntry struct {
 	LowerBound  string
 	AfterFence  string
 	Limit       int
+	CreatedAt   time.Time
+	LastUsedAt  time.Time
 	ExpiresAt   time.Time
 	Snapshot    *archive.StableSessionSnapshot
 	CursorState map[string]stableCursorClaims
@@ -48,14 +57,18 @@ type stableSnapshotRegistry struct {
 	mu         sync.Mutex
 	secret     []byte
 	ttl        time.Duration
+	idleTTL    time.Duration
 	maxActive  int
 	now        func() time.Time
 	snapshots  map[string]*stableSnapshotEntry
 }
 
-func newStableSnapshotRegistry(ttl time.Duration, maxActive int) (*stableSnapshotRegistry, error) {
+func newStableSnapshotRegistry(ttl, idleTTL time.Duration, maxActive int) (*stableSnapshotRegistry, error) {
 	if ttl < time.Minute || ttl > 6*time.Hour {
 		return nil, fmt.Errorf("snapshot ttl is outside the supported range")
+	}
+	if idleTTL < time.Minute || idleTTL > ttl {
+		return nil, fmt.Errorf("snapshot idle ttl is outside the supported range")
 	}
 	if maxActive < 1 || maxActive > 8 {
 		return nil, fmt.Errorf("snapshot capacity is outside the supported range")
@@ -67,6 +80,7 @@ func newStableSnapshotRegistry(ttl time.Duration, maxActive int) (*stableSnapsho
 	return &stableSnapshotRegistry{
 		secret:    secret,
 		ttl:       ttl,
+		idleTTL:   idleTTL,
 		maxActive: maxActive,
 		now:       time.Now,
 		snapshots: map[string]*stableSnapshotEntry{},
@@ -75,7 +89,7 @@ func newStableSnapshotRegistry(ttl time.Duration, maxActive int) (*stableSnapsho
 
 func (registry *stableSnapshotRegistry) cleanupLocked(now time.Time) {
 	for id, entry := range registry.snapshots {
-		if !now.Before(entry.ExpiresAt) {
+		if !now.Before(entry.ExpiresAt) || now.Sub(entry.LastUsedAt) >= registry.idleTTL {
 			_ = entry.Snapshot.Close()
 			delete(registry.snapshots, id)
 		}
@@ -114,6 +128,8 @@ func (registry *stableSnapshotRegistry) create(store *archive.Store, lowerBound 
 		LowerBound:  lowerBound.UTC().Format(time.RFC3339Nano),
 		AfterFence:  afterValue,
 		Limit:       limit,
+		CreatedAt:   now,
+		LastUsedAt:  now,
 		ExpiresAt:   now.Add(registry.ttl),
 		Snapshot:    snapshot,
 		CursorState: map[string]stableCursorClaims{},
@@ -133,6 +149,7 @@ func (registry *stableSnapshotRegistry) get(id, lowerBound, afterFence string, l
 	if entry.LowerBound != lowerBound || entry.AfterFence != afterFence || entry.Limit != limit {
 		return nil, archive.ErrSnapshotCursor
 	}
+	entry.LastUsedAt = registry.now()
 	return entry, nil
 }
 
@@ -144,7 +161,32 @@ func (registry *stableSnapshotRegistry) getForExport(id string) (*stableSnapshot
 	if !ok {
 		return nil, errStableSnapshotExpired
 	}
+	entry.LastUsedAt = registry.now()
 	return entry, nil
+}
+
+func (registry *stableSnapshotRegistry) export(ctx context.Context, id, sessionID, digest string, destination io.Writer) error {
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+	now := registry.now()
+	registry.cleanupLocked(now)
+	entry, ok := registry.snapshots[id]
+	if !ok {
+		return errStableSnapshotExpired
+	}
+	entry.LastUsedAt = now
+	exportContext, cancel := context.WithDeadline(ctx, entry.ExpiresAt)
+	defer cancel()
+	err := entry.Snapshot.ExportSessionJSONL(exportContext, sessionID, digest, destination)
+	entry.LastUsedAt = registry.now()
+	if !entry.LastUsedAt.Before(entry.ExpiresAt) {
+		_ = entry.Snapshot.Close()
+		delete(registry.snapshots, id)
+		if err == nil {
+			err = errStableSnapshotExpired
+		}
+	}
+	return err
 }
 
 func (registry *stableSnapshotRegistry) cursor(entry *stableSnapshotEntry, claims stableCursorClaims) (string, error) {
@@ -161,6 +203,7 @@ func (registry *stableSnapshotRegistry) cursor(entry *stableSnapshotEntry, claim
 	if !ok || current != entry || !registry.now().Before(entry.ExpiresAt) {
 		return "", errStableSnapshotExpired
 	}
+	entry.LastUsedAt = registry.now()
 	entry.CursorState[token] = claims
 	return token, nil
 }
@@ -175,6 +218,7 @@ func (registry *stableSnapshotRegistry) resolveCursor(entry *stableSnapshotEntry
 	if !ok || current != entry || !registry.now().Before(entry.ExpiresAt) {
 		return stableCursorClaims{}, errStableSnapshotExpired
 	}
+	entry.LastUsedAt = registry.now()
 	claims, ok := entry.CursorState[token]
 	if !ok {
 		return stableCursorClaims{}, archive.ErrSnapshotCursor
@@ -184,16 +228,12 @@ func (registry *stableSnapshotRegistry) resolveCursor(entry *stableSnapshotEntry
 
 func (s *server) stableRegistry() (*stableSnapshotRegistry, error) {
 	s.snapshotOnce.Do(func() {
-		ttl := durationEnv("ARCHIVE_SNAPSHOT_TTL", 2*time.Hour, time.Minute, 6*time.Hour)
-		maxActive := integerEnv("ARCHIVE_MAX_ACTIVE_SNAPSHOTS", 2, 1, 8)
-		s.snapshotRegistry, s.snapshotRegistryErr = newStableSnapshotRegistry(ttl, maxActive)
+		s.allowOfflineFull = env("ARCHIVE_ALLOW_OFFLINE_FULL_SNAPSHOT", "false") == "true"
+		ttl := registryTTL(s.allowOfflineFull)
+		s.snapshotRegistry, s.snapshotRegistryErr = newStableSnapshotRegistry(ttl, stableSnapshotIdleTTL, stableMaxActiveSnapshots)
 		if s.snapshotRegistry != nil {
-			interval := ttl / 4
-			if interval > time.Minute {
-				interval = time.Minute
-			}
 			go func() {
-				ticker := time.NewTicker(interval)
+				ticker := time.NewTicker(30 * time.Second)
 				defer ticker.Stop()
 				for range ticker.C {
 					s.snapshotRegistry.cleanup()
@@ -204,20 +244,26 @@ func (s *server) stableRegistry() (*stableSnapshotRegistry, error) {
 	return s.snapshotRegistry, s.snapshotRegistryErr
 }
 
-func durationEnv(name string, fallback, minimum, maximum time.Duration) time.Duration {
-	value, err := time.ParseDuration(strings.TrimSpace(os.Getenv(name)))
-	if err != nil || value < minimum || value > maximum {
-		return fallback
+func registryTTL(allowOfflineFull bool) time.Duration {
+	if allowOfflineFull {
+		return stableOfflineSnapshotTTL
 	}
-	return value
+	return stableSnapshotTTL
 }
 
-func integerEnv(name string, fallback, minimum, maximum int) int {
-	value, err := strconv.Atoi(strings.TrimSpace(os.Getenv(name)))
-	if err != nil || value < minimum || value > maximum {
-		return fallback
+func (registry *stableSnapshotRegistry) diagnostics() (int, int64) {
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+	now := registry.now()
+	registry.cleanupLocked(now)
+	oldest := int64(0)
+	for _, entry := range registry.snapshots {
+		age := int64(now.Sub(entry.CreatedAt).Seconds())
+		if age > oldest {
+			oldest = age
+		}
 	}
-	return value
+	return len(registry.snapshots), oldest
 }
 
 func (s *server) stableSessions(w http.ResponseWriter, r *http.Request) {
@@ -278,6 +324,10 @@ func (s *server) stableSessions(w http.ResponseWriter, r *http.Request) {
 	registry, err := s.stableRegistry()
 	if err != nil {
 		stableError(w, http.StatusServiceUnavailable, "stable session snapshots are unavailable")
+		return
+	}
+	if snapshotID == "" && afterFence == nil && !s.allowOfflineFull {
+		stableError(w, http.StatusForbidden, "full snapshots require an offline archive")
 		return
 	}
 	var entry *stableSnapshotEntry
@@ -360,8 +410,8 @@ func stableError(w http.ResponseWriter, status int, message string) {
 }
 
 func (s *server) digestRefresher() {
-	batch := integerEnv("ARCHIVE_DIGEST_BATCH", 2, 1, 64)
-	interval := durationEnv("ARCHIVE_DIGEST_INTERVAL", 500*time.Millisecond, 100*time.Millisecond, time.Minute)
+	const batch = 2
+	const interval = 500 * time.Millisecond
 	for {
 		updated, err := s.s.RefreshSessionExportDigests(context.Background(), batch)
 		if err != nil {
@@ -382,9 +432,5 @@ func (s *server) exportStableSnapshot(w http.ResponseWriter, r *http.Request, ti
 	if err != nil {
 		return err
 	}
-	entry, err := registry.getForExport(ticket.Snapshot)
-	if err != nil {
-		return err
-	}
-	return entry.Snapshot.ExportSessionJSONL(r.Context(), ticket.SessionID, ticket.RecordsSHA256, w)
+	return registry.export(r.Context(), ticket.Snapshot, ticket.SessionID, ticket.RecordsSHA256, w)
 }
