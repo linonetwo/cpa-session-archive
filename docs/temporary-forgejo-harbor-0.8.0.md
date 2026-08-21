@@ -7,7 +7,11 @@ non-deployment validation path.
 
 The accurately named workflow is
 .forgejo/workflows/temporary-cpa-session-archive-0.8.0-harbor.yml. It runs
-only on chore/forgejo-harbor-0.8.0 or by manual dispatch. Quality uses
+quality checks on master, chore/forgejo-harbor-0.8.0 or by manual dispatch.
+Publishing remains disabled unless the event is for master and the Forgejo API
+confirms that its branch protection rule exists, or the source commit is the
+explicit immutable allowlist entry
+5b03ec7fae3ffc2229c5a61aa2345ebad354fefe. Quality uses
 mtc-quality-pod; release uses mtc-release-rootless and Pod-local rootless
 BuildKit. Docker daemons, mutable image tags, Kubernetes and GitOps are outside
 this path.
@@ -16,8 +20,11 @@ Required Actions secrets are HARBOR_USERNAME, HARBOR_PASSWORD,
 COSIGN_PRIVATE_KEY, COSIGN_PASSWORD and COSIGN_PUBLIC_KEY. The only image tag
 is the full 40-character commit SHA. The job verifies the tag digest, generates
 and scans a CycloneDX SBOM, signs by digest, attaches the SBOM attestation, and
-verifies signature and attestation. BuildKit also emits native SBOM and
-maximum-mode provenance.
+verifies signature and attestation. Before signing, the job downloads and
+validates the complete native BuildKit SBOM and SLSA in-toto blobs, including
+their OCI subject digests. A pinned upload action retains only non-secret
+digest, SBOM and verification evidence for three days, even when publishing
+fails.
 
 ## Removal deadline
 
@@ -33,4 +40,3 @@ Remove this path no later than **2026-09-22**:
    reviewed GitHub commit.
 
 The temporary image is not approved for deployment.
-

@@ -1,7 +1,7 @@
 name: temporary-cpa-session-archive-0.8.0-harbor
 on:
   push:
-    branches: [chore/forgejo-harbor-0.8.0]
+    branches: [master, chore/forgejo-harbor-0.8.0]
   workflow_dispatch:
 permissions:
   contents: read
@@ -13,15 +13,29 @@ jobs:
     runs-on: mtc-quality-pod
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
         with: { go-version: "1.24.x", cache: true }
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with: { node-version: "22" }
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
         with: { version: "11" }
-      - run: sudo apt-get update && sudo apt-get install -y gcc libc6-dev
-      - run: bash tests/ops/temporary_forgejo_harbor_contract.sh
+      - name: Install static-analysis tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y gcc libc6-dev shellcheck
+          GOBIN="${RUNNER_TEMP}/bin" go install github.com/rhysd/actionlint/cmd/actionlint@03d0035246f3e81f36aed592ffb4bebf33a03106
+      - name: Workflow and shell contracts
+        run: |
+          set -euo pipefail
+          bash tests/ops/temporary_forgejo_harbor_contract.sh
+          bash tests/ops/buildctl_argv_smoke.sh
+          shellcheck scripts/build_immutable_image.sh tests/ops/*.sh
+          "${RUNNER_TEMP}/bin/actionlint" .forgejo/workflows/temporary-cpa-session-archive-0.8.0-harbor.yml
       - name: Formatting and static analysis
         run: |
           test -z "$(gofmt -l .)"
@@ -34,7 +48,10 @@ jobs:
         run: |
           go test -count=1 ./internal/archive -run 'Test(StableSnapshotPaginatesTiesAndExcludesLaterWrites|StableSnapshotExportIsCanonicalAndSnapshotBound|ClosingStableSnapshotReleasesWALCheckpoint|StableSnapshotQueuesOnlyRequestedMissingDigests)$'
           go test -count=1 ./cmd/cpa-session-collector -run 'Test(StableSessionsHTTPContractFailsClosedAndReplays|StableSnapshotTicketExportsExactSnapshot|FullSnapshotRequiresOfflineOptIn)$'
-      - run: python3 -m unittest scripts.test_migrate_attribution
+      - run: >-
+          PYTHONPATH=scripts python3 -m unittest
+          scripts.test_migrate_attribution
+          scripts.test_verify_buildkit_attestations
       - name: Browser contract
         run: |
           pnpm install --frozen-lockfile
@@ -46,72 +63,124 @@ jobs:
           CGO_ENABLED=1 go build -o /tmp/cpa-session-collector ./cmd/cpa-session-collector
   release:
     needs: quality
+    if: ${{ github.ref == 'refs/heads/master' || github.sha == '5b03ec7fae3ffc2229c5a61aa2345ebad354fefe' }}
     runs-on: mtc-release-rootless
     timeout-minutes: 45
-    env:
-      HARBOR_USERNAME: ${{ secrets.HARBOR_USERNAME }}
-      HARBOR_PASSWORD: ${{ secrets.HARBOR_PASSWORD }}
-      COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
-      COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
-      COSIGN_PUBLIC_KEY: ${{ secrets.COSIGN_PUBLIC_KEY }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
         with: { go-version: "1.24.x", cache: false }
-      - name: Validate immutable release inputs
+      - name: Validate immutable release identity
         run: |
           set -euo pipefail
+          test "${GITHUB_SERVER_URL}" = "https://git.k3s.onetwo.website"
+          test "${GITHUB_API_URL}" = "https://git.k3s.onetwo.website/api/v1"
+          test "${GITHUB_REPOSITORY}" = "mtc-ci/cpa-session-archive"
           test "$(printf '%s' "${GITHUB_SHA}" | grep -Ec '^[0-9a-f]{40}$')" = 1
-          test -n "${HARBOR_USERNAME}"
-          test -n "${HARBOR_PASSWORD}"
-          test -n "${COSIGN_PRIVATE_KEY}"
-          test -n "${COSIGN_PASSWORD}"
-          test -n "${COSIGN_PUBLIC_KEY}"
+          if [ "${GITHUB_REF}" = "refs/heads/master" ]; then
+            test -n "${GITHUB_TOKEN}"
+            protection_file="$(mktemp "${RUNNER_TEMP}/master-protection.XXXXXX")"
+            trap 'rm -f -- "${protection_file}"' EXIT HUP INT TERM
+            curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
+              --header "Authorization: token ${GITHUB_TOKEN}" \
+              "${GITHUB_API_URL}/repos/mtc-ci/cpa-session-archive/branch_protections/master" \
+              > "${protection_file}"
+            PROTECTION_FILE="${protection_file}" python3 -c 'import json, os; value=json.load(open(os.environ["PROTECTION_FILE"])); assert isinstance(value, dict) and "message" not in value'
+            rm -f -- "${protection_file}"
+            trap - EXIT HUP INT TERM
+          else
+            test "${GITHUB_SHA}" = "5b03ec7fae3ffc2229c5a61aa2345ebad354fefe"
+          fi
+          test "$(git rev-parse --verify HEAD)" = "${GITHUB_SHA}"
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+      - name: Publish, scan, attest, sign, and verify immutable image
+        env:
+          HARBOR_USERNAME: ${{ secrets.HARBOR_USERNAME }}
+          HARBOR_PASSWORD: ${{ secrets.HARBOR_PASSWORD }}
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+          COSIGN_PUBLIC_KEY: ${{ secrets.COSIGN_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+
+          test "$(git rev-parse --verify HEAD)" = "${GITHUB_SHA}"
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+
+          for value in HARBOR_USERNAME HARBOR_PASSWORD COSIGN_PRIVATE_KEY COSIGN_PASSWORD COSIGN_PUBLIC_KEY; do
+            test -n "${!value}"
+          done
           test -S "${BUILDKIT_HOST#unix://}"
           command -v buildctl
           command -v syft
           command -v trivy
           command -v cosign
-      - name: Authenticate Harbor without a daemon
-        run: |
-          set -euo pipefail
-          export DOCKER_CONFIG="${RUNNER_TEMP}/registry-auth"
-          mkdir -p "${DOCKER_CONFIG}"
-          chmod 0700 "${DOCKER_CONFIG}"
-          GOBIN="${RUNNER_TEMP}/bin" go install github.com/google/go-containerregistry/cmd/crane@v0.20.6
-          printf '%s' "${HARBOR_PASSWORD}" | "${RUNNER_TEMP}/bin/crane" auth login harbor.k3s.onetwo.website --username "${HARBOR_USERNAME}" --password-stdin
-          echo "DOCKER_CONFIG=${DOCKER_CONFIG}" >> "${GITHUB_ENV}"
-          echo "CRANE=${RUNNER_TEMP}/bin/crane" >> "${GITHUB_ENV}"
-      - name: Build and push full-SHA image
-        run: |
-          set -euo pipefail
-          buildctl --addr "${BUILDKIT_HOST}" build +            --frontend dockerfile.v0 +            --local context=. +            --local dockerfile=. +            --opt filename=Dockerfile +            --output "type=image,name=${IMAGE}:${GITHUB_SHA},push=true" +            --attest type=sbom +            --attest type=provenance,mode=max +            --metadata-file build-metadata.json
+
+          docker_config="$(mktemp -d "${RUNNER_TEMP}/registry-auth.XXXXXX")"
+          key="$(mktemp "${RUNNER_TEMP}/cosign-key.XXXXXX")"
+          public_key="$(mktemp "${RUNNER_TEMP}/cosign-pub.XXXXXX")"
+          cleanup() {
+            rm -rf -- "${docker_config}"
+            rm -f -- "${key}" "${public_key}"
+          }
+          trap cleanup EXIT HUP INT TERM
+          export DOCKER_CONFIG="${docker_config}"
+
+          GOBIN="${RUNNER_TEMP}/bin" go install github.com/google/go-containerregistry/cmd/crane@59a4b85930392a30c39462519adc8a2026d47181
+          crane="${RUNNER_TEMP}/bin/crane"
+          printf '%s' "${HARBOR_PASSWORD}" |
+            "${crane}" auth login harbor.k3s.onetwo.website \
+              --username "${HARBOR_USERNAME}" \
+              --password-stdin
+
+          BUILD_METADATA_FILE=build-metadata.json \
+            BUILDCTL_BIN=buildctl \
+            bash scripts/build_immutable_image.sh
           digest="$(python3 -c 'import json; print(json.load(open("build-metadata.json"))["containerimage.digest"])')"
           printf '%s' "${digest}" | grep -Eq '^sha256:[0-9a-f]{64}$'
-          test "$("${CRANE}" digest "${IMAGE}:${GITHUB_SHA}")" = "${digest}"
-          echo "IMAGE_DIGEST=${digest}" >> "${GITHUB_ENV}"
-      - name: Generate and scan immutable SBOM
-        run: |
-          set -euo pipefail
-          syft "${IMAGE}@${IMAGE_DIGEST}" -o cyclonedx-json=sbom.cdx.json
+          test "$("${crane}" digest "${IMAGE}:${GITHUB_SHA}")" = "${digest}"
+          printf '%s\n' "${digest}" > image-digest.txt
+
+          python3 scripts/verify_buildkit_attestations.py \
+            --crane "${crane}" \
+            --image "${IMAGE}" \
+            --digest "${digest}" \
+            --output-dir native-attestations
+
+          syft "${IMAGE}@${digest}" -o cyclonedx-json=sbom.cdx.json
           test -s sbom.cdx.json
-          trivy image --exit-code 1 --ignore-unfixed --severity HIGH,CRITICAL "${IMAGE}@${IMAGE_DIGEST}"
-      - name: Sign, attest and verify by digest
-        run: |
-          set -euo pipefail
-          umask 077
-          key="${RUNNER_TEMP}/cosign.key"
-          public_key="${RUNNER_TEMP}/cosign.pub"
+          trivy image --exit-code 1 --ignore-unfixed \
+            --severity HIGH,CRITICAL "${IMAGE}@${digest}"
+
           printf '%s' "${COSIGN_PRIVATE_KEY}" > "${key}"
           printf '%s' "${COSIGN_PUBLIC_KEY}" > "${public_key}"
-          cosign sign --yes --key "${key}" "${IMAGE}@${IMAGE_DIGEST}"
-          cosign attest --yes --key "${key}" --type cyclonedx --predicate sbom.cdx.json "${IMAGE}@${IMAGE_DIGEST}"
-          cosign verify --key "${public_key}" "${IMAGE}@${IMAGE_DIGEST}" > signature-verification.json
-          cosign verify-attestation --key "${public_key}" --type cyclonedx "${IMAGE}@${IMAGE_DIGEST}" > attestation-verification.json
+          cosign sign --yes --key "${key}" "${IMAGE}@${digest}"
+          cosign attest --yes --key "${key}" --type cyclonedx \
+            --predicate sbom.cdx.json "${IMAGE}@${digest}"
+          cosign verify --key "${public_key}" "${IMAGE}@${digest}" \
+            > signature-verification.json
+          cosign verify-attestation --key "${public_key}" --type cyclonedx \
+            "${IMAGE}@${digest}" > attestation-verification.json
           test -s signature-verification.json
           test -s attestation-verification.json
-          rm -f "${key}" "${public_key}"
-      - name: Emit non-secret release proof
-        run: |
-          printf '{"commit":"%s","digest":"%s","image":"%s","sbom":"cyclonedx","verified":true}\n' +            "${GITHUB_SHA}" "${IMAGE_DIGEST}" "${IMAGE}"
 
+          printf '{"commit":"%s","digest":"%s","image":"%s","sbom":"cyclonedx","verified":true}\n' \
+            "${GITHUB_SHA}" "${digest}" "${IMAGE}" > release-proof.json
+      - name: Upload non-secret release evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: cpa-session-archive-${{ github.sha }}-evidence
+          retention-days: 3
+          if-no-files-found: warn
+          path: |
+            image-digest.txt
+            sbom.cdx.json
+            native-attestations/*.intoto.json
+            native-attestations/verification.json
+            signature-verification.json
+            attestation-verification.json
+            release-proof.json
