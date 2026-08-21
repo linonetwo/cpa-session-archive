@@ -6,15 +6,21 @@ harbor.k3s.onetwo.website/mtc-ci/cpa-session-archive are a temporary,
 non-deployment validation path.
 
 The accurately named workflow is
-.forgejo/workflows/temporary-cpa-session-archive-0.8.0-harbor.yml. It runs
-quality checks on master, chore/forgejo-harbor-0.8.0 or by manual dispatch.
-Publishing remains disabled unless the event is for master and the Forgejo API
-confirms that its branch protection rule exists, or the source commit is the
-explicit immutable allowlist entry
-5b03ec7fae3ffc2229c5a61aa2345ebad354fefe. Quality uses
+.forgejo/workflows/temporary-cpa-session-archive-0.8.0-harbor.yml. It listens
+only for pushes to master. Both jobs additionally require a push event,
+refs/heads/master and a true protected-ref context. There is no manual
+dispatch, temporary-branch trigger or historical-SHA bypass. Quality uses
 mtc-quality-pod; release uses mtc-release-rootless and Pod-local rootless
 BuildKit. Docker daemons, mutable image tags, Kubernetes and GitOps are outside
 this path.
+
+Forgejo's currently documented workflow schema does not provide GitHub-style
+job environments with required reviewers, so this workflow does not claim an
+environment approval gate. Do not install the five repository secrets until
+operations has protected master against direct and force pushes and required
+reviewed changes. A future historical build must be implemented only as a
+strictly allowlisted build-context input in the workflow already loaded from
+protected master; the target ref must never supply the workflow definition.
 
 Required Actions secrets are HARBOR_USERNAME, HARBOR_PASSWORD,
 COSIGN_PRIVATE_KEY, COSIGN_PASSWORD and COSIGN_PUBLIC_KEY. The only image tag

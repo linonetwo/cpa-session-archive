@@ -26,12 +26,18 @@ grep -Fq 'trivy image --exit-code 1' "$workflow"
 grep -Fq 'cosign sign --yes' "$workflow"
 grep -Fq 'cosign verify-attestation' "$workflow"
 grep -Fq '${IMAGE}:${GITHUB_SHA}' "$repository/scripts/build_immutable_image.sh"
-grep -Fq "github.ref == 'refs/heads/master' || github.sha ==" "$workflow"
-grep -Fq "github.sha == '5b03ec7fae3ffc2229c5a61aa2345ebad354fefe'" "$workflow"
+protected_push_condition='if: ${{ github.event_name == '\''push'\'' && github.ref == '\''refs/heads/master'\'' && github.ref_protected == true }}'
+test "$(grep -Fc "${protected_push_condition}" "$workflow")" -eq 2
+grep -Fq '    branches: [master]' "$workflow"
+if grep -Eq 'workflow_dispatch|chore/forgejo-harbor|5b03ec7fae3ffc2229c5a61aa2345ebad354fefe' "$workflow" "$document"; then
+  echo "secret-bearing workflow must not expose dispatch, temporary refs or old-SHA allowlists" >&2
+  exit 1
+fi
 grep -Fq 'test "${GITHUB_SERVER_URL}" = "https://git.k3s.onetwo.website"' "$workflow"
-grep -Fq 'test "${GITHUB_API_URL}" = "https://git.k3s.onetwo.website/api/v1"' "$workflow"
 grep -Fq 'test "${GITHUB_REPOSITORY}" = "mtc-ci/cpa-session-archive"' "$workflow"
-grep -Fq '/branch_protections/master' "$workflow"
+grep -Fq 'test "${GITHUB_EVENT_NAME}" = "push"' "$workflow"
+grep -Fq 'test "${GITHUB_REF}" = "refs/heads/master"' "$workflow"
+grep -Fq 'test "${GITHUB_REF_PROTECTED:-false}" = "true"' "$workflow"
 grep -Fq 'test "$(git rev-parse --verify HEAD)" = "${GITHUB_SHA}"' "$workflow"
 grep -Fq 'test -z "$(git status --porcelain=v1 --untracked-files=all)"' "$workflow"
 grep -Fq 'umask 077' "$workflow"

@@ -1,8 +1,7 @@
 name: temporary-cpa-session-archive-0.8.0-harbor
 on:
   push:
-    branches: [master, chore/forgejo-harbor-0.8.0]
-  workflow_dispatch:
+    branches: [master]
 permissions:
   contents: read
 env:
@@ -10,6 +9,7 @@ env:
   BUILDKIT_HOST: unix:///run/user/1000/buildkit/buildkitd.sock
 jobs:
   quality:
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' && github.ref_protected == true }}
     runs-on: mtc-quality-pod
     timeout-minutes: 45
     steps:
@@ -63,7 +63,7 @@ jobs:
           CGO_ENABLED=1 go build -o /tmp/cpa-session-collector ./cmd/cpa-session-collector
   release:
     needs: quality
-    if: ${{ github.ref == 'refs/heads/master' || github.sha == '5b03ec7fae3ffc2229c5a61aa2345ebad354fefe' }}
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' && github.ref_protected == true }}
     runs-on: mtc-release-rootless
     timeout-minutes: 45
     steps:
@@ -77,23 +77,11 @@ jobs:
         run: |
           set -euo pipefail
           test "${GITHUB_SERVER_URL}" = "https://git.k3s.onetwo.website"
-          test "${GITHUB_API_URL}" = "https://git.k3s.onetwo.website/api/v1"
           test "${GITHUB_REPOSITORY}" = "mtc-ci/cpa-session-archive"
+          test "${GITHUB_EVENT_NAME}" = "push"
+          test "${GITHUB_REF}" = "refs/heads/master"
+          test "${GITHUB_REF_PROTECTED:-false}" = "true"
           test "$(printf '%s' "${GITHUB_SHA}" | grep -Ec '^[0-9a-f]{40}$')" = 1
-          if [ "${GITHUB_REF}" = "refs/heads/master" ]; then
-            test -n "${GITHUB_TOKEN}"
-            protection_file="$(mktemp "${RUNNER_TEMP}/master-protection.XXXXXX")"
-            trap 'rm -f -- "${protection_file}"' EXIT HUP INT TERM
-            curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
-              --header "Authorization: token ${GITHUB_TOKEN}" \
-              "${GITHUB_API_URL}/repos/mtc-ci/cpa-session-archive/branch_protections/master" \
-              > "${protection_file}"
-            PROTECTION_FILE="${protection_file}" python3 -c 'import json, os; value=json.load(open(os.environ["PROTECTION_FILE"])); assert isinstance(value, dict) and "message" not in value'
-            rm -f -- "${protection_file}"
-            trap - EXIT HUP INT TERM
-          else
-            test "${GITHUB_SHA}" = "5b03ec7fae3ffc2229c5a61aa2345ebad354fefe"
-          fi
           test "$(git rev-parse --verify HEAD)" = "${GITHUB_SHA}"
           test -z "$(git status --porcelain=v1 --untracked-files=all)"
       - name: Publish, scan, attest, sign, and verify immutable image
