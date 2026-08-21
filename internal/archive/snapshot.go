@@ -90,6 +90,7 @@ func (s *Store) BeginStableSessionSnapshot(lowerBound time.Time, afterIngestFenc
 	}
 	defer rows.Close()
 	sessions := make([]StableSessionSummary, 0)
+	missingDigests := make([]string, 0)
 	requestCount := 0
 	for rows.Next() {
 		var item StableSessionSummary
@@ -109,16 +110,22 @@ func (s *Store) BeginStableSessionSnapshot(lowerBound time.Time, afterIngestFenc
 		item.FirstAt = canonicalTimestamp(first)
 		item.LastAt = canonicalTimestamp(last)
 		if digestFence != sessionFence || len(item.RecordsSHA256) != 64 {
-			return nil, ErrSnapshotProjectionNotReady
+			missingDigests = append(missingDigests, item.SessionID)
+			continue
 		}
 		if _, err = hex.DecodeString(item.RecordsSHA256); err != nil {
-			return nil, ErrSnapshotProjectionNotReady
+			missingDigests = append(missingDigests, item.SessionID)
+			continue
 		}
 		sessions = append(sessions, item)
 		requestCount += item.Requests
 	}
 	if err = rows.Err(); err != nil {
 		return nil, err
+	}
+	if len(missingDigests) > 0 {
+		s.queueSessionExportDigests(missingDigests)
+		return nil, ErrSnapshotProjectionNotReady
 	}
 	sort.SliceStable(sessions, func(left, right int) bool {
 		if sessions[left].LastAt != sessions[right].LastAt {
@@ -326,6 +333,62 @@ func (s *Store) RefreshSessionExportDigests(ctx context.Context, limit int) (int
 		updated++
 	}
 	return updated, nil
+}
+
+const maxQueuedSessionDigests = 10000
+
+func (s *Store) queueSessionExportDigests(sessionIDs []string) {
+	s.digestMu.Lock()
+	defer s.digestMu.Unlock()
+	if s.digestQueue == nil {
+		s.digestQueue = map[string]struct{}{}
+	}
+	for _, sessionID := range sessionIDs {
+		if len(s.digestQueue) >= maxQueuedSessionDigests {
+			return
+		}
+		s.digestQueue[sessionID] = struct{}{}
+	}
+}
+
+func (s *Store) PendingSessionExportDigests() (int, int) {
+	s.digestMu.Lock()
+	defer s.digestMu.Unlock()
+	return len(s.digestQueue), maxQueuedSessionDigests
+}
+
+func (s *Store) takeSessionExportDigests(limit int) []string {
+	s.digestMu.Lock()
+	defer s.digestMu.Unlock()
+	sessionIDs := make([]string, 0, len(s.digestQueue))
+	for sessionID := range s.digestQueue {
+		sessionIDs = append(sessionIDs, sessionID)
+	}
+	sort.Strings(sessionIDs)
+	if len(sessionIDs) > limit {
+		sessionIDs = sessionIDs[:limit]
+	}
+	for _, sessionID := range sessionIDs {
+		delete(s.digestQueue, sessionID)
+	}
+	return sessionIDs
+}
+
+func (s *Store) RefreshQueuedSessionExportDigests(ctx context.Context, limit int) (int, error) {
+	if limit < 1 {
+		limit = 1
+	}
+	if limit > 64 {
+		limit = 64
+	}
+	sessionIDs := s.takeSessionExportDigests(limit)
+	for index, sessionID := range sessionIDs {
+		if err := s.refreshSessionExportDigest(ctx, sessionID); err != nil {
+			s.queueSessionExportDigests(sessionIDs[index:])
+			return index, err
+		}
+	}
+	return len(sessionIDs), nil
 }
 
 func (s *Store) refreshSessionExportDigest(ctx context.Context, sessionID string) error {

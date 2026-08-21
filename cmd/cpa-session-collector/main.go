@@ -646,6 +646,7 @@ func (s *server) stats(w http.ResponseWriter, r *http.Request) {
 	if registryErr == nil {
 		activeSnapshots, oldestSnapshotAge = registry.diagnostics()
 	}
+	pendingDigests, pendingDigestCapacity := s.s.PendingSessionExportDigests()
 	writeJSON(w, struct {
 		archive.Stats
 		SessionCursorProtocols []string `json:"session_cursor_protocols"`
@@ -655,6 +656,8 @@ func (s *server) stats(w http.ResponseWriter, r *http.Request) {
 		ActiveSnapshots       int      `json:"active_snapshots"`
 		OldestSnapshotAge     int64    `json:"oldest_snapshot_age_seconds"`
 		OfflineFullEnabled    bool     `json:"offline_full_snapshot_enabled"`
+		PendingSessionDigests int      `json:"pending_session_digests"`
+		PendingDigestCapacity int      `json:"pending_session_digest_capacity"`
 	}{
 		Stats:                  out,
 		SessionCursorProtocols: []string{archive.StableCursorProtocol},
@@ -664,6 +667,8 @@ func (s *server) stats(w http.ResponseWriter, r *http.Request) {
 		ActiveSnapshots:       activeSnapshots,
 		OldestSnapshotAge:     oldestSnapshotAge,
 		OfflineFullEnabled:    s.allowOfflineFull,
+		PendingSessionDigests: pendingDigests,
+		PendingDigestCapacity: pendingDigestCapacity,
 	})
 }
 func (s *server) gc(w http.ResponseWriter, r *http.Request) {

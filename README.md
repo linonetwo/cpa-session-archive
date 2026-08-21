@@ -4,6 +4,9 @@ A fail-open, content-addressed session archive plugin for [CLIProxyAPI](https://
 
 It captures original requests and complete streaming/non-streaming responses through CPA's native plugin lifecycle, groups them by session, and stores a compact training-data archive in SQLite WAL.
 
+See [Stable session snapshot export](docs/stable-session-snapshots.md) for the
+incremental migration protocol, WAL limits, and safe full-migration runbook.
+
 ## Why
 
 Codex and other agent clients resend large instructions, tool schemas, conversation context and attachments. Naively storing every request duplicates the same image, audio, video or prompt fragments many times and can grow to tens of gigabytes quickly.

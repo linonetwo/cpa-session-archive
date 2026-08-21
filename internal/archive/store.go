@@ -14,6 +14,7 @@ import (
 	"log"
 	"os"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -21,6 +22,8 @@ type Store struct {
 	DB            *sql.DB
 	DBPath        string
 	StoreUpstream bool
+	digestMu      sync.Mutex
+	digestQueue   map[string]struct{}
 }
 type SessionSummary struct {
 	SessionID        string   `json:"session_id"`

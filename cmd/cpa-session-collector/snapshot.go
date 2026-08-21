@@ -412,8 +412,15 @@ func stableError(w http.ResponseWriter, status int, message string) {
 func (s *server) digestRefresher() {
 	const batch = 2
 	const interval = 500 * time.Millisecond
+	allowOfflineFull := env("ARCHIVE_ALLOW_OFFLINE_FULL_SNAPSHOT", "false") == "true"
 	for {
-		updated, err := s.s.RefreshSessionExportDigests(context.Background(), batch)
+		var updated int
+		var err error
+		if allowOfflineFull {
+			updated, err = s.s.RefreshSessionExportDigests(context.Background(), batch)
+		} else {
+			updated, err = s.s.RefreshQueuedSessionExportDigests(context.Background(), batch)
+		}
 		if err != nil {
 			log.Printf("stable session digest projection will retry: %v", err)
 			time.Sleep(5 * time.Second)

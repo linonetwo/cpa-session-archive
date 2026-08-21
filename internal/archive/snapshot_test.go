@@ -216,3 +216,76 @@ func TestOpeningLegacyArchiveDoesNotBackfillEventRows(t *testing.T) {
 		t.Fatalf("startup performed an event backfill: events=%d clock=%d", events, sequence)
 	}
 }
+
+func TestClosingStableSnapshotReleasesWALCheckpoint(t *testing.T) {
+	store, err := OpenStore(filepath.Join(t.TempDir(), "archive.sqlite"), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.DB.Close()
+	when := time.Date(2026, 8, 21, 1, 2, 3, 0, time.UTC)
+	if err = store.PutBatch([]Record{{
+		RequestID: "before", SessionID: "session-before", StartedAt: when, CompletedAt: when,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	refreshAllSessionDigests(t, store)
+	snapshot, err := store.BeginStableSessionSnapshot(time.Unix(0, 0), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = store.PutBatch([]Record{{
+		RequestID: "after", SessionID: "session-after", StartedAt: when, CompletedAt: when,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err = snapshot.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = snapshot.Page("", "", 1); !errors.Is(err, ErrSnapshotCursor) {
+		t.Fatalf("closed snapshot remained readable: %v", err)
+	}
+	var busy, logFrames, checkpointed int
+	if err = store.DB.QueryRow(`PRAGMA wal_checkpoint(TRUNCATE)`).Scan(&busy, &logFrames, &checkpointed); err != nil {
+		t.Fatal(err)
+	}
+	if busy != 0 || logFrames != 0 {
+		t.Fatalf("closed snapshot retained WAL reader: busy=%d log=%d checkpointed=%d", busy, logFrames, checkpointed)
+	}
+}
+
+func TestStableSnapshotQueuesOnlyRequestedMissingDigests(t *testing.T) {
+	store, err := OpenStore(filepath.Join(t.TempDir(), "archive.sqlite"), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.DB.Close()
+	when := time.Date(2026, 8, 21, 1, 2, 3, 0, time.UTC)
+	if err = store.PutBatch([]Record{{
+		RequestID: "request", SessionID: "session", StartedAt: when, CompletedAt: when,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.BeginStableSessionSnapshot(time.Unix(0, 0), nil); !errors.Is(err, ErrSnapshotProjectionNotReady) {
+		t.Fatalf("missing digest did not return a retryable projection state: %v", err)
+	}
+	pending, capacity := store.PendingSessionExportDigests()
+	if pending != 1 || capacity != maxQueuedSessionDigests {
+		t.Fatalf("digest queue pending=%d capacity=%d", pending, capacity)
+	}
+	if updated, refreshErr := store.RefreshQueuedSessionExportDigests(context.Background(), 1); refreshErr != nil || updated != 1 {
+		t.Fatalf("queued digest refresh updated=%d err=%v", updated, refreshErr)
+	}
+	pending, _ = store.PendingSessionExportDigests()
+	if pending != 0 {
+		t.Fatalf("digest queue did not drain: %d", pending)
+	}
+	snapshot, err := store.BeginStableSessionSnapshot(time.Unix(0, 0), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer snapshot.Close()
+	if snapshot.SessionCount() != 1 {
+		t.Fatalf("session count=%d", snapshot.SessionCount())
+	}
+}

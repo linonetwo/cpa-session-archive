@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -123,6 +124,9 @@ func TestStableSessionsHTTPContractFailsClosedAndReplays(t *testing.T) {
 	if strings.Contains(firstResponse.Body.String(), "secret-key-value") || strings.Contains(firstResponse.Body.String(), "/private/archive.sqlite") {
 		t.Fatalf("stable projection leaked archive data: %s", firstResponse.Body.String())
 	}
+	registry.mu.Lock()
+	expiringSnapshot := registry.snapshots[first.Snapshot].Snapshot
+	registry.mu.Unlock()
 	if err := server.s.PutBatch([]archive.Record{
 		{
 			RequestID:   "request-0",
@@ -183,6 +187,9 @@ func TestStableSessionsHTTPContractFailsClosedAndReplays(t *testing.T) {
 	response, _ = requestStablePage(t, server, replayURL)
 	if response.Code != http.StatusGone {
 		t.Fatalf("expired snapshot status=%d", response.Code)
+	}
+	if _, _, err := expiringSnapshot.Page("", "", 1); !errors.Is(err, archive.ErrSnapshotCursor) {
+		t.Fatalf("expired registry entry did not rollback its transaction: %v", err)
 	}
 	if _, err := registry.resolveCursor(&stableSnapshotEntry{ID: "missing"}, *first.NextCursor); err == nil {
 		t.Fatal("expired cursor unexpectedly resolved")
@@ -274,5 +281,22 @@ func TestLegacySessionsResponseRemainsAList(t *testing.T) {
 	server.sessions(response, request)
 	if response.Code != http.StatusOK || !strings.HasPrefix(strings.TrimSpace(response.Body.String()), "[") {
 		t.Fatalf("legacy response changed: status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestFullSnapshotRequiresOfflineOptIn(t *testing.T) {
+	when := time.Date(2026, 8, 21, 1, 2, 3, 0, time.UTC)
+	server, _, closeServer := snapshotTestServer(t, []archive.Record{{
+		RequestID: "request", SessionID: "session", StartedAt: when, CompletedAt: when,
+	}}, 1)
+	defer closeServer()
+	server.allowOfflineFull = false
+	request := httptest.NewRequest(http.MethodGet,
+		"/v1/sessions?cursor_protocol="+url.QueryEscape(archive.StableCursorProtocol)+
+			"&lower_bound_completed_at="+url.QueryEscape("2026-08-21T00:00:00Z")+"&limit=100", nil)
+	response := httptest.NewRecorder()
+	server.sessions(response, request)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("live full snapshot status=%d body=%s", response.Code, response.Body.String())
 	}
 }
