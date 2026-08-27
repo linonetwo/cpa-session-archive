@@ -1,6 +1,9 @@
-const http = require("node:http");
-const fs = require("node:fs");
-const path = require("node:path");
+import http from "node:http";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const page = fs.readFileSync(
   path.join(__dirname, "..", "internal", "archive", "web", "index.html"),
@@ -68,7 +71,7 @@ const originalResponse = {
     },
   ],
 };
-const encode = (value) =>
+const encode = (value: unknown) =>
   Buffer.from(JSON.stringify(value), "utf8").toString("base64");
 const requestRecord = {
   request_id: requestID,
@@ -132,7 +135,7 @@ const timelinePreview = {
   entries: [],
 };
 
-function json(response, value) {
+function json(response: http.ServerResponse, value: unknown) {
   response.writeHead(200, {
     "content-type": "application/json; charset=utf-8",
     "cache-control": "no-store",
@@ -141,7 +144,7 @@ function json(response, value) {
 }
 
 const server = http.createServer((request, response) => {
-  const url = new URL(request.url, "http://127.0.0.1:4173");
+  const url = new URL(request.url ?? "/", "http://127.0.0.1:4173");
   if (url.pathname === "/healthz") return json(response, { ok: true });
   if (url.pathname === "/" || url.pathname === "/management.html") {
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });

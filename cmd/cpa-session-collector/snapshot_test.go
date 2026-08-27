@@ -19,15 +19,18 @@ import (
 )
 
 type stablePageResponse struct {
-	CursorProtocol   string                         `json:"cursor_protocol"`
-	Snapshot         string                         `json:"snapshot"`
-	IngestFence      string                         `json:"ingest_fence"`
-	SessionCount     int                            `json:"session_count"`
-	RequestCount     int                            `json:"request_count"`
-	SessionSetSHA256 string                         `json:"session_set_sha256"`
-	Sessions         []archive.StableSessionSummary `json:"sessions"`
-	Complete         bool                           `json:"complete"`
-	NextCursor       *string                        `json:"next_cursor"`
+	SnapshotSchemaVersion         int                            `json:"snapshot_schema_version"`
+	CursorProtocol                string                         `json:"cursor_protocol"`
+	Snapshot                      string                         `json:"snapshot"`
+	IngestFence                   string                         `json:"ingest_fence"`
+	TombstoneSafeAfterIngestFence string                         `json:"tombstone_safe_after_ingest_fence"`
+	SessionCount                  int                            `json:"session_count"`
+	RequestCount                  int                            `json:"request_count"`
+	DeletedSessionCount           int                            `json:"deleted_session_count"`
+	SessionSetSHA256              string                         `json:"session_set_sha256"`
+	Sessions                      []archive.StableSessionSummary `json:"sessions"`
+	Complete                      bool                           `json:"complete"`
+	NextCursor                    *string                        `json:"next_cursor"`
 }
 
 func refreshHTTPTestDigests(t *testing.T, store *archive.Store) {
@@ -115,10 +118,10 @@ func TestStableSessionsHTTPContractFailsClosedAndReplays(t *testing.T) {
 	if firstResponse.Code != http.StatusOK {
 		t.Fatalf("first status=%d body=%s", firstResponse.Code, firstResponse.Body.String())
 	}
-	if first.CursorProtocol != archive.StableCursorProtocol || first.SessionCount != 3 || first.RequestCount != 3 || first.NextCursor == nil || first.Complete {
+	if first.SnapshotSchemaVersion != archive.StableSnapshotSchemaVersion || first.CursorProtocol != archive.StableCursorProtocol || first.SessionCount != 3 || first.RequestCount != 3 || first.DeletedSessionCount != 0 || first.NextCursor == nil || first.Complete {
 		t.Fatalf("first page=%+v", first)
 	}
-	if len(first.SessionSetSHA256) != 64 || len(first.IngestFence) == 0 {
+	if len(first.SessionSetSHA256) != 64 || len(first.IngestFence) == 0 || first.TombstoneSafeAfterIngestFence != "0" {
 		t.Fatalf("metadata=%+v", first)
 	}
 	if strings.Contains(firstResponse.Body.String(), "secret-key-value") || strings.Contains(firstResponse.Body.String(), "/private/archive.sqlite") {
@@ -167,6 +170,18 @@ func TestStableSessionsHTTPContractFailsClosedAndReplays(t *testing.T) {
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("rewritten limit status=%d", response.Code)
 	}
+	response, _ = requestStablePage(t, server, strings.Replace(replayURL, "2030-01-01T00%3A00%3A00Z", "2031-01-01T00%3A00%3A00Z", 1))
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("rewritten lower bound status=%d", response.Code)
+	}
+	response, _ = requestStablePage(t, server, replayURL+"&unknown_stable_option=true")
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("unknown stable query status=%d", response.Code)
+	}
+	response, _ = requestStablePage(t, server, base+"&snapshot=unknown")
+	if response.Code != http.StatusGone {
+		t.Fatalf("unknown snapshot status=%d", response.Code)
+	}
 
 	refreshHTTPTestDigests(t, server.s)
 	secondResponse, second := requestStablePage(t, server, base)
@@ -193,6 +208,35 @@ func TestStableSessionsHTTPContractFailsClosedAndReplays(t *testing.T) {
 	}
 	if _, err := registry.resolveCursor(&stableSnapshotEntry{ID: "missing"}, *first.NextCursor); err == nil {
 		t.Fatal("expired cursor unexpectedly resolved")
+	}
+}
+
+func TestStableSessionsRejectWrongFenceAndSnapshotBinding(t *testing.T) {
+	when := time.Date(2026, 8, 21, 1, 2, 3, 0, time.UTC)
+	server, _, closeServer := snapshotTestServer(t, []archive.Record{{
+		RequestID: "request", SessionID: "session", StartedAt: when, CompletedAt: when,
+	}}, 2)
+	defer closeServer()
+	base := "/v1/sessions?cursor_protocol=" + url.QueryEscape(archive.StableCursorProtocol) +
+		"&lower_bound_completed_at=" + url.QueryEscape("2030-01-01T00:00:00Z") + "&after_ingest_fence=0&limit=10"
+	response, page := requestStablePage(t, server, base)
+	if response.Code != http.StatusOK {
+		t.Fatalf("initial status=%d body=%s", response.Code, response.Body.String())
+	}
+	response, _ = requestStablePage(t, server, strings.Replace(base, "after_ingest_fence=0", "after_ingest_fence=1", 1)+"&snapshot="+url.QueryEscape(page.Snapshot))
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("rewritten prior fence status=%d", response.Code)
+	}
+	response, _ = requestStablePage(t, server, strings.Replace(base, "after_ingest_fence=0", "after_ingest_fence=999999", 1))
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("future prior fence status=%d", response.Code)
+	}
+	if _, err := server.s.DB.Exec(`UPDATE archive_snapshot_contract SET tombstone_safe_after_sequence=1 WHERE id=1`); err != nil {
+		t.Fatal(err)
+	}
+	response, _ = requestStablePage(t, server, base)
+	if response.Code != http.StatusConflict {
+		t.Fatalf("pre-upgrade prior fence status=%d body=%s", response.Code, response.Body.String())
 	}
 }
 
@@ -270,6 +314,52 @@ func TestStableSnapshotTicketExportsExactSnapshot(t *testing.T) {
 	}
 }
 
+func TestExpiredStableSnapshotDownloadReturnsJSONBeforeAttachmentHeaders(t *testing.T) {
+	when := time.Date(2026, 8, 21, 1, 2, 3, 0, time.UTC)
+	server, registry, closeServer := snapshotTestServer(t, []archive.Record{{
+		RequestID: "request", SessionID: "session", StartedAt: when, CompletedAt: when,
+	}}, 1)
+	defer closeServer()
+	now := time.Now().UTC()
+	registry.now = func() time.Time { return now }
+	base := "/v1/sessions?cursor_protocol=" + url.QueryEscape(archive.StableCursorProtocol) +
+		"&lower_bound_completed_at=" + url.QueryEscape("2030-01-01T00:00:00Z") + "&limit=10"
+	response, page := requestStablePage(t, server, base)
+	if response.Code != http.StatusOK {
+		t.Fatalf("snapshot status=%d body=%s", response.Code, response.Body.String())
+	}
+	ticketRequest := httptest.NewRequest(http.MethodGet,
+		"/v1/export-tickets?session_id=session&scope=session&format=archive&snapshot="+url.QueryEscape(page.Snapshot), nil)
+	ticketResponse := httptest.NewRecorder()
+	server.exportTicket(ticketResponse, ticketRequest)
+	if ticketResponse.Code != http.StatusOK {
+		t.Fatalf("ticket status=%d body=%s", ticketResponse.Code, ticketResponse.Body.String())
+	}
+	var ticket struct {
+		URL                   string `json:"url"`
+		SnapshotSchemaVersion int    `json:"snapshot_schema_version"`
+	}
+	if err := json.Unmarshal(ticketResponse.Body.Bytes(), &ticket); err != nil {
+		t.Fatal(err)
+	}
+	if ticket.SnapshotSchemaVersion != archive.StableSnapshotSchemaVersion {
+		t.Fatalf("ticket schema version=%d", ticket.SnapshotSchemaVersion)
+	}
+	now = now.Add(2 * time.Minute)
+	downloadResponse := httptest.NewRecorder()
+	server.ticketedExport(downloadResponse, httptest.NewRequest(http.MethodGet, ticket.URL, nil))
+	if downloadResponse.Code != http.StatusGone || downloadResponse.Header().Get("Content-Type") != "application/json" {
+		t.Fatalf("expired download status=%d content-type=%q body=%s", downloadResponse.Code, downloadResponse.Header().Get("Content-Type"), downloadResponse.Body.String())
+	}
+	if downloadResponse.Header().Get("Content-Disposition") != "" || downloadResponse.Header().Get("X-Accel-Buffering") != "" {
+		t.Fatalf("attachment headers committed before expiry check: %+v", downloadResponse.Header())
+	}
+	var failure map[string]string
+	if err := json.Unmarshal(downloadResponse.Body.Bytes(), &failure); err != nil || failure["error"] != "stable session snapshot expired" {
+		t.Fatalf("expired body=%s err=%v", downloadResponse.Body.String(), err)
+	}
+}
+
 func TestLegacySessionsResponseRemainsAList(t *testing.T) {
 	when := time.Date(2026, 8, 21, 1, 2, 3, 0, time.UTC)
 	server, _, closeServer := snapshotTestServer(t, []archive.Record{{
@@ -281,6 +371,27 @@ func TestLegacySessionsResponseRemainsAList(t *testing.T) {
 	server.sessions(response, request)
 	if response.Code != http.StatusOK || !strings.HasPrefix(strings.TrimSpace(response.Body.String()), "[") {
 		t.Fatalf("legacy response changed: status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestStatsAdvertisesStableSnapshotSchema(t *testing.T) {
+	server, _, closeServer := snapshotTestServer(t, nil, 1)
+	defer closeServer()
+	response := httptest.NewRecorder()
+	server.stats(response, httptest.NewRequest(http.MethodGet, "/v1/stats", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("stats status=%d body=%s", response.Code, response.Body.String())
+	}
+	var payload struct {
+		SnapshotSchemaVersion         int      `json:"snapshot_schema_version"`
+		TombstoneSafeAfterIngestFence string   `json:"tombstone_safe_after_ingest_fence"`
+		SessionCursorProtocols        []string `json:"session_cursor_protocols"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.SnapshotSchemaVersion != archive.StableSnapshotSchemaVersion || payload.TombstoneSafeAfterIngestFence != "0" || len(payload.SessionCursorProtocols) != 1 || payload.SessionCursorProtocols[0] != archive.StableCursorProtocol {
+		t.Fatalf("stats discovery=%+v", payload)
 	}
 }
 

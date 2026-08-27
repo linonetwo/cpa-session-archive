@@ -12,6 +12,8 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -54,13 +56,13 @@ type stableSnapshotEntry struct {
 }
 
 type stableSnapshotRegistry struct {
-	mu         sync.Mutex
-	secret     []byte
-	ttl        time.Duration
-	idleTTL    time.Duration
-	maxActive  int
-	now        func() time.Time
-	snapshots  map[string]*stableSnapshotEntry
+	mu        sync.Mutex
+	secret    []byte
+	ttl       time.Duration
+	idleTTL   time.Duration
+	maxActive int
+	now       func() time.Time
+	snapshots map[string]*stableSnapshotEntry
 }
 
 func newStableSnapshotRegistry(ttl, idleTTL time.Duration, maxActive int) (*stableSnapshotRegistry, error) {
@@ -189,6 +191,23 @@ func (registry *stableSnapshotRegistry) export(ctx context.Context, id, sessionI
 	return err
 }
 
+func (registry *stableSnapshotRegistry) validateExport(id, sessionID, digest string) error {
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+	now := registry.now()
+	registry.cleanupLocked(now)
+	entry, ok := registry.snapshots[id]
+	if !ok {
+		return errStableSnapshotExpired
+	}
+	summary, found := entry.Snapshot.Summary(sessionID)
+	if !found || summary.Deleted || summary.RecordsSHA256 != digest {
+		return archive.ErrSnapshotCursor
+	}
+	entry.LastUsedAt = now
+	return nil
+}
+
 func (registry *stableSnapshotRegistry) cursor(entry *stableSnapshotEntry, claims stableCursorClaims) (string, error) {
 	raw, err := json.Marshal(claims)
 	if err != nil {
@@ -272,12 +291,12 @@ func (s *server) stableSessions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	allowed := map[string]bool{
-		"cursor_protocol": true,
+		"cursor_protocol":          true,
 		"lower_bound_completed_at": true,
-		"after_ingest_fence": true,
-		"limit": true,
-		"snapshot": true,
-		"cursor": true,
+		"after_ingest_fence":       true,
+		"limit":                    true,
+		"snapshot":                 true,
+		"cursor":                   true,
 	}
 	for key := range r.URL.Query() {
 		if !allowed[key] {
@@ -346,6 +365,8 @@ func (s *server) stableSessions(w http.ResponseWriter, r *http.Request) {
 			stableError(w, http.StatusGone, "stable session snapshot expired")
 		case errors.Is(err, archive.ErrSnapshotCursor):
 			stableError(w, http.StatusBadRequest, "invalid stable session cursor")
+		case errors.Is(err, archive.ErrSnapshotTombstoneHistory):
+			stableError(w, http.StatusConflict, "stable session tombstone history is unavailable before the upgrade fence")
 		default:
 			stableError(w, http.StatusInternalServerError, "stable session snapshot failed")
 		}
@@ -390,15 +411,18 @@ func (s *server) stableSessions(w http.ResponseWriter, r *http.Request) {
 		nextCursor = token
 	}
 	writeJSON(w, map[string]any{
-		"cursor_protocol":   archive.StableCursorProtocol,
-		"snapshot":          entry.ID,
-		"ingest_fence":      strconv.FormatInt(entry.Snapshot.IngestFence(), 10),
-		"session_count":     entry.Snapshot.SessionCount(),
-		"request_count":     entry.Snapshot.RequestCount(),
-		"session_set_sha256": entry.Snapshot.SessionSetSHA256(),
-		"sessions":          page,
-		"complete":          next == nil,
-		"next_cursor":       nextCursor,
+		"snapshot_schema_version":           archive.StableSnapshotSchemaVersion,
+		"cursor_protocol":                   archive.StableCursorProtocol,
+		"snapshot":                          entry.ID,
+		"ingest_fence":                      strconv.FormatInt(entry.Snapshot.IngestFence(), 10),
+		"tombstone_safe_after_ingest_fence": strconv.FormatInt(entry.Snapshot.TombstoneSafeAfterIngestFence(), 10),
+		"session_count":                     entry.Snapshot.SessionCount(),
+		"request_count":                     entry.Snapshot.RequestCount(),
+		"deleted_session_count":             entry.Snapshot.DeletedSessionCount(),
+		"session_set_sha256":                entry.Snapshot.SessionSetSHA256(),
+		"sessions":                          page,
+		"complete":                          next == nil,
+		"next_cursor":                       nextCursor,
 	})
 }
 
@@ -434,10 +458,39 @@ func (s *server) digestRefresher() {
 	}
 }
 
-func (s *server) exportStableSnapshot(w http.ResponseWriter, r *http.Request, ticket exportTicket) error {
+func (s *server) validateStableSnapshotExport(ticket exportTicket) error {
 	registry, err := s.stableRegistry()
 	if err != nil {
 		return err
 	}
-	return registry.export(r.Context(), ticket.Snapshot, ticket.SessionID, ticket.RecordsSHA256, w)
+	return registry.validateExport(ticket.Snapshot, ticket.SessionID, ticket.RecordsSHA256)
+}
+
+func (s *server) prepareStableSnapshotExport(r *http.Request, ticket exportTicket) (*os.File, int64, error) {
+	registry, err := s.stableRegistry()
+	if err != nil {
+		return nil, 0, err
+	}
+	artifact, err := os.CreateTemp(filepath.Dir(s.s.DBPath), ".cpa-stable-session-*.jsonl")
+	if err != nil {
+		return nil, 0, err
+	}
+	cleanup := func() {
+		_ = artifact.Close()
+		_ = os.Remove(artifact.Name())
+	}
+	if err = registry.export(r.Context(), ticket.Snapshot, ticket.SessionID, ticket.RecordsSHA256, artifact); err != nil {
+		cleanup()
+		return nil, 0, err
+	}
+	info, err := artifact.Stat()
+	if err != nil {
+		cleanup()
+		return nil, 0, err
+	}
+	if _, err = artifact.Seek(0, io.SeekStart); err != nil {
+		cleanup()
+		return nil, 0, err
+	}
+	return artifact, info.Size(), nil
 }

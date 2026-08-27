@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"log"
 	"net/http"
@@ -31,13 +32,13 @@ type server struct {
 }
 
 type exportTicket struct {
-	SessionID    string
-	Scope        string
-	Format       string
-	Filename     string
-	ExpiresAt    time.Time
-	Snapshot     string
-	RecordsSHA256 string
+	SessionID      string
+	Scope          string
+	Format         string
+	Filename       string
+	ExpiresAt      time.Time
+	Snapshot       string
+	RecordsSHA256  string
 	CursorProtocol string
 }
 
@@ -521,7 +522,7 @@ func (s *server) exportTicket(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		summary, found := stableEntry.Snapshot.Summary(sessionID)
-		if !found {
+		if !found || summary.Deleted {
 			stableError(w, http.StatusNotFound, "session not found in snapshot")
 			return
 		}
@@ -549,7 +550,10 @@ func (s *server) exportTicket(w http.ResponseWriter, r *http.Request) {
 	s.ticketMu.Lock()
 	now := time.Now()
 	for key, item := range s.tickets {
-		if now.After(item.ExpiresAt) {
+		// Keep a short tombstone window so a client retry receives a
+		// machine-readable 410 instead of becoming indistinguishable from an
+		// invented capability. Old entries are still bounded to one hour total.
+		if now.After(item.ExpiresAt.Add(30 * time.Minute)) {
 			delete(s.tickets, key)
 		}
 	}
@@ -568,6 +572,7 @@ func (s *server) exportTicket(w http.ResponseWriter, r *http.Request) {
 	s.ticketMu.Unlock()
 	response := map[string]any{"url": "/archive-api/v1/exports/" + token, "filename": name, "content_type": "application/x-ndjson", "expires_at": expiresAt}
 	if snapshotID != "" {
+		response["snapshot_schema_version"] = archive.StableSnapshotSchemaVersion
 		response["cursor_protocol"] = cursorProtocol
 		response["snapshot"] = snapshotID
 		response["records_sha256"] = recordsSHA256
@@ -575,17 +580,53 @@ func (s *server) exportTicket(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, response)
 }
 func (s *server) ticketedExport(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		stableError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
 	token := strings.TrimPrefix(r.URL.Path, "/archive-api/v1/exports/")
 	s.ticketMu.Lock()
 	ticket, ok := s.tickets[token]
-	if ok && time.Now().After(ticket.ExpiresAt) {
-		delete(s.tickets, token)
+	expired := ok && !time.Now().Before(ticket.ExpiresAt)
+	if expired {
 		ok = false
 	}
 	s.ticketMu.Unlock()
 	if !ok {
-		http.Error(w, "invalid or expired export ticket", 404)
+		if expired {
+			stableError(w, http.StatusGone, "export ticket expired")
+		} else {
+			stableError(w, http.StatusNotFound, "invalid export ticket")
+		}
 		return
+	}
+	var stableArtifact *os.File
+	var stableArtifactSize int64
+	if ticket.Snapshot != "" {
+		var err error
+		if r.Method == http.MethodHead {
+			err = s.validateStableSnapshotExport(ticket)
+		} else {
+			stableArtifact, stableArtifactSize, err = s.prepareStableSnapshotExport(r, ticket)
+		}
+		if err != nil {
+			switch {
+			case errors.Is(err, errStableSnapshotExpired), errors.Is(err, context.DeadlineExceeded):
+				stableError(w, http.StatusGone, "stable session snapshot expired")
+			case errors.Is(err, archive.ErrSnapshotCursor):
+				stableError(w, http.StatusBadRequest, "invalid stable snapshot export")
+			default:
+				stableError(w, http.StatusInternalServerError, "stable snapshot export failed")
+			}
+			return
+		}
+		if stableArtifact != nil {
+			defer func() {
+				_ = stableArtifact.Close()
+				_ = os.Remove(stableArtifact.Name())
+			}()
+			w.Header().Set("Content-Length", strconv.FormatInt(stableArtifactSize, 10))
+		}
 	}
 	w.Header().Set("Content-Type", "application/x-ndjson; charset=utf-8")
 	w.Header().Set("Content-Disposition", `attachment; filename="`+ticket.Filename+`"`)
@@ -596,18 +637,18 @@ func (s *server) ticketedExport(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
-	// Commit and flush the attachment headers before expanding potentially
-	// large CAS payloads. Browsers can create the destination file immediately
-	// instead of treating a long first-record rehydration as an empty response.
+	// Stable snapshot exports are completely materialized and verified above,
+	// before committing 200. This makes snapshot expiry a machine-readable 410
+	// instead of a successful response with a truncated attachment.
 	w.WriteHeader(http.StatusOK)
 	if flusher, ok := w.(http.Flusher); ok {
 		flusher.Flush()
 	}
 	var e error
-	if ticket.Format == "sft" {
+	if stableArtifact != nil {
+		_, e = io.Copy(w, stableArtifact)
+	} else if ticket.Format == "sft" {
 		e = s.s.ExportTrainingJSONL(r.Context(), map[bool]string{true: ticket.SessionID, false: ""}[ticket.Scope == "session"], w)
-	} else if ticket.Snapshot != "" {
-		e = s.exportStableSnapshot(w, r, ticket)
 	} else {
 		e = s.s.ExportArchiveJSONL(r.Context(), map[bool]string{true: ticket.SessionID, false: ""}[ticket.Scope == "session"], w)
 	}
@@ -647,28 +688,37 @@ func (s *server) stats(w http.ResponseWriter, r *http.Request) {
 		activeSnapshots, oldestSnapshotAge = registry.diagnostics()
 	}
 	pendingDigests, pendingDigestCapacity := s.s.PendingSessionExportDigests()
+	snapshotSchemaVersion, tombstoneSafeAfter, contractErr := s.s.StableSnapshotContract(r.Context())
+	if contractErr != nil {
+		http.Error(w, contractErr.Error(), 500)
+		return
+	}
 	writeJSON(w, struct {
 		archive.Stats
-		SessionCursorProtocols []string `json:"session_cursor_protocols"`
-		SnapshotTTLSeconds     int64    `json:"snapshot_ttl_seconds"`
-		SnapshotIdleTTLSeconds int64    `json:"snapshot_idle_ttl_seconds"`
-		MaxActiveSnapshots    int      `json:"max_active_snapshots"`
-		ActiveSnapshots       int      `json:"active_snapshots"`
-		OldestSnapshotAge     int64    `json:"oldest_snapshot_age_seconds"`
-		OfflineFullEnabled    bool     `json:"offline_full_snapshot_enabled"`
-		PendingSessionDigests int      `json:"pending_session_digests"`
-		PendingDigestCapacity int      `json:"pending_session_digest_capacity"`
+		SessionCursorProtocols        []string `json:"session_cursor_protocols"`
+		SnapshotSchemaVersion         int      `json:"snapshot_schema_version"`
+		TombstoneSafeAfterIngestFence string   `json:"tombstone_safe_after_ingest_fence"`
+		SnapshotTTLSeconds            int64    `json:"snapshot_ttl_seconds"`
+		SnapshotIdleTTLSeconds        int64    `json:"snapshot_idle_ttl_seconds"`
+		MaxActiveSnapshots            int      `json:"max_active_snapshots"`
+		ActiveSnapshots               int      `json:"active_snapshots"`
+		OldestSnapshotAge             int64    `json:"oldest_snapshot_age_seconds"`
+		OfflineFullEnabled            bool     `json:"offline_full_snapshot_enabled"`
+		PendingSessionDigests         int      `json:"pending_session_digests"`
+		PendingDigestCapacity         int      `json:"pending_session_digest_capacity"`
 	}{
-		Stats:                  out,
-		SessionCursorProtocols: []string{archive.StableCursorProtocol},
-		SnapshotTTLSeconds:     int64(registryTTL(s.allowOfflineFull).Seconds()),
-		SnapshotIdleTTLSeconds: int64(stableSnapshotIdleTTL.Seconds()),
-		MaxActiveSnapshots:    stableMaxActiveSnapshots,
-		ActiveSnapshots:       activeSnapshots,
-		OldestSnapshotAge:     oldestSnapshotAge,
-		OfflineFullEnabled:    s.allowOfflineFull,
-		PendingSessionDigests: pendingDigests,
-		PendingDigestCapacity: pendingDigestCapacity,
+		Stats:                         out,
+		SessionCursorProtocols:        []string{archive.StableCursorProtocol},
+		SnapshotSchemaVersion:         snapshotSchemaVersion,
+		TombstoneSafeAfterIngestFence: strconv.FormatInt(tombstoneSafeAfter, 10),
+		SnapshotTTLSeconds:            int64(registryTTL(s.allowOfflineFull).Seconds()),
+		SnapshotIdleTTLSeconds:        int64(stableSnapshotIdleTTL.Seconds()),
+		MaxActiveSnapshots:            stableMaxActiveSnapshots,
+		ActiveSnapshots:               activeSnapshots,
+		OldestSnapshotAge:             oldestSnapshotAge,
+		OfflineFullEnabled:            s.allowOfflineFull,
+		PendingSessionDigests:         pendingDigests,
+		PendingDigestCapacity:         pendingDigestCapacity,
 	})
 }
 func (s *server) gc(w http.ResponseWriter, r *http.Request) {

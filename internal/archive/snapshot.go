@@ -16,29 +16,45 @@ import (
 	"time"
 )
 
-const StableCursorProtocol = "session-snapshot-cursor-v1"
+const (
+	StableCursorProtocol        = "session-snapshot-cursor-v1"
+	StableSnapshotSchemaVersion = 2
+)
 
 var (
 	ErrSnapshotProjectionNotReady = errors.New("stable session projection is not ready")
 	ErrSnapshotCursor             = errors.New("stable session cursor is invalid")
+	ErrSnapshotTombstoneHistory   = errors.New("stable session tombstone history is unavailable before the upgrade fence")
 )
+
+func (s *Store) StableSnapshotContract(ctx context.Context) (int, int64, error) {
+	var version int
+	var tombstoneSafeAfter int64
+	err := s.DB.QueryRowContext(ctx, `SELECT schema_version,tombstone_safe_after_sequence
+		FROM archive_snapshot_contract WHERE id=1`).Scan(&version, &tombstoneSafeAfter)
+	return version, tombstoneSafeAfter, err
+}
 
 type StableSessionSummary struct {
 	SessionID     string `json:"session_id"`
 	Requests      int    `json:"requests"`
-	FirstAt       string `json:"first_at"`
+	FirstAt       string `json:"first_at,omitempty"`
 	LastAt        string `json:"last_at"`
-	RecordsSHA256 string `json:"records_sha256"`
+	RecordsSHA256 string `json:"records_sha256,omitempty"`
+	Deleted       bool   `json:"deleted,omitempty"`
+	DeletedAt     string `json:"deleted_at,omitempty"`
 }
 
 type StableSessionSnapshot struct {
-	mu               sync.Mutex
-	tx               *sql.Tx
-	closed           bool
-	ingestFence      int64
-	sessions         []StableSessionSummary
-	requestCount     int
-	sessionSetSHA256 string
+	mu                 sync.Mutex
+	tx                 *sql.Tx
+	closed             bool
+	ingestFence        int64
+	tombstoneSafeAfter int64
+	sessions           []StableSessionSummary
+	requestCount       int
+	deletedCount       int
+	sessionSetSHA256   string
 }
 
 func (s *Store) BeginStableSessionSnapshot(lowerBound time.Time, afterIngestFence *int64) (*StableSessionSnapshot, error) {
@@ -57,34 +73,56 @@ func (s *Store) BeginStableSessionSnapshot(lowerBound time.Time, afterIngestFenc
 	if err = tx.QueryRowContext(context.Background(), `SELECT sequence FROM archive_ingest_clock WHERE id=1`).Scan(&ingestFence); err != nil {
 		return nil, err
 	}
+	var tombstoneSafeAfter int64
+	if err = tx.QueryRowContext(context.Background(), `SELECT tombstone_safe_after_sequence FROM archive_snapshot_contract WHERE id=1`).Scan(&tombstoneSafeAfter); err != nil {
+		return nil, err
+	}
 	useDelta := 0
 	after := int64(0)
 	if afterIngestFence != nil {
 		if *afterIngestFence < 0 || *afterIngestFence > ingestFence {
 			return nil, ErrSnapshotCursor
 		}
+		if *afterIngestFence < tombstoneSafeAfter {
+			return nil, ErrSnapshotTombstoneHistory
+		}
 		useDelta = 1
 		after = *afterIngestFence
 	}
 	lower := canonicalTimestamp(lowerBound)
-	rows, err := tx.QueryContext(context.Background(), `WITH selected AS (
-		SELECT DISTINCT r.session_id
-		FROM records r
+	rows, err := tx.QueryContext(context.Background(), `WITH changed(session_id) AS (
+		SELECT events.session_id
+		FROM archive_ingest_events events
+		WHERE ?=1 AND events.sequence>? AND events.sequence<=?
+		UNION
+		SELECT events.previous_session_id
+		FROM archive_ingest_events events
+		WHERE ?=1 AND events.sequence>? AND events.sequence<=? AND events.previous_session_id<>''
+	), selected(session_id) AS (
+		SELECT DISTINCT records.session_id
+		FROM records
 		WHERE ?=0
-		   OR julianday(r.completed_at)>=julianday(?)
-		   OR EXISTS(
-				SELECT 1 FROM archive_ingest_events changed
-				WHERE changed.session_id=r.session_id AND changed.sequence>? AND changed.sequence<=?
-		   )
+		   OR julianday(records.completed_at)>=julianday(?)
+		   OR EXISTS(SELECT 1 FROM changed WHERE changed.session_id=records.session_id)
+		UNION
+		SELECT changed.session_id
+		FROM changed
+		WHERE NOT EXISTS(SELECT 1 FROM records WHERE records.session_id=changed.session_id)
 	)
-	SELECT r.session_id,COUNT(*),MIN(r.started_at),MAX(r.completed_at),
-		COALESCE((SELECT MAX(e.sequence) FROM archive_ingest_events e WHERE e.session_id=r.session_id AND e.sequence<=?),0),
+	SELECT selected.session_id,COUNT(records.id),MIN(records.started_at),MAX(records.completed_at),
+		COALESCE((SELECT MAX(events.sequence) FROM archive_ingest_events events
+			WHERE (events.session_id=selected.session_id OR events.previous_session_id=selected.session_id) AND events.sequence<=?),0),
 		COALESCE(d.records_sha256,''),COALESCE(d.max_ingest_sequence,-1)
-	FROM records r
-	JOIN selected x ON x.session_id=r.session_id
-	LEFT JOIN session_export_digests d ON d.session_id=r.session_id
-	GROUP BY r.session_id
-	ORDER BY MAX(r.completed_at) DESC,r.session_id COLLATE BINARY ASC`, useDelta, lower, after, ingestFence, ingestFence)
+		,COUNT(records.id)=0,
+		COALESCE((SELECT MAX(events.recorded_at) FROM archive_ingest_events events
+			WHERE (events.session_id=selected.session_id OR events.previous_session_id=selected.session_id) AND events.sequence<=?),'')
+	FROM selected
+	LEFT JOIN records ON records.session_id=selected.session_id
+	LEFT JOIN session_export_digests d ON d.session_id=selected.session_id
+	GROUP BY selected.session_id
+	ORDER BY COALESCE(MAX(records.completed_at),(SELECT MAX(events.recorded_at) FROM archive_ingest_events events
+		WHERE (events.session_id=selected.session_id OR events.previous_session_id=selected.session_id) AND events.sequence<=?)) DESC,
+		selected.session_id COLLATE BINARY ASC`, useDelta, after, ingestFence, useDelta, after, ingestFence, useDelta, lower, ingestFence, ingestFence, ingestFence)
 	if err != nil {
 		return nil, err
 	}
@@ -92,18 +130,31 @@ func (s *Store) BeginStableSessionSnapshot(lowerBound time.Time, afterIngestFenc
 	sessions := make([]StableSessionSummary, 0)
 	missingDigests := make([]string, 0)
 	requestCount := 0
+	deletedCount := 0
 	for rows.Next() {
 		var item StableSessionSummary
-		var firstAt, lastAt string
+		var firstAt, lastAt, changedAt sql.NullString
 		var sessionFence, digestFence int64
-		if err = rows.Scan(&item.SessionID, &item.Requests, &firstAt, &lastAt, &sessionFence, &item.RecordsSHA256, &digestFence); err != nil {
+		if err = rows.Scan(&item.SessionID, &item.Requests, &firstAt, &lastAt, &sessionFence, &item.RecordsSHA256, &digestFence, &item.Deleted, &changedAt); err != nil {
 			return nil, err
 		}
 		if !validStableSessionID(item.SessionID) {
 			return nil, fmt.Errorf("stable session id is outside the protocol limits")
 		}
-		first, firstErr := time.Parse(time.RFC3339Nano, firstAt)
-		last, lastErr := time.Parse(time.RFC3339Nano, lastAt)
+		if item.Deleted {
+			deletedAt, parseErr := time.Parse(time.RFC3339Nano, changedAt.String)
+			if parseErr != nil {
+				return nil, fmt.Errorf("stable session tombstone timestamp is invalid")
+			}
+			item.DeletedAt = canonicalTimestamp(deletedAt)
+			item.LastAt = item.DeletedAt
+			item.RecordsSHA256 = ""
+			sessions = append(sessions, item)
+			deletedCount++
+			continue
+		}
+		first, firstErr := time.Parse(time.RFC3339Nano, firstAt.String)
+		last, lastErr := time.Parse(time.RFC3339Nano, lastAt.String)
 		if firstErr != nil || lastErr != nil {
 			return nil, fmt.Errorf("stable session timestamp is invalid")
 		}
@@ -139,11 +190,13 @@ func (s *Store) BeginStableSessionSnapshot(lowerBound time.Time, afterIngestFenc
 	}
 	rollback = false
 	return &StableSessionSnapshot{
-		tx:               tx,
-		ingestFence:      ingestFence,
-		sessions:         sessions,
-		requestCount:     requestCount,
-		sessionSetSHA256: setDigest,
+		tx:                 tx,
+		ingestFence:        ingestFence,
+		tombstoneSafeAfter: tombstoneSafeAfter,
+		sessions:           sessions,
+		requestCount:       requestCount,
+		deletedCount:       deletedCount,
+		sessionSetSHA256:   setDigest,
 	}, nil
 }
 
@@ -165,11 +218,13 @@ func canonicalTimestamp(value time.Time) string {
 
 func stableSessionSetDigest(sessions []StableSessionSummary) (string, error) {
 	type digestItem struct {
-		FirstAt       string `json:"first_at"`
+		FirstAt       string `json:"first_at,omitempty"`
 		LastAt        string `json:"last_at"`
-		RecordsSHA256 string `json:"records_sha256"`
+		RecordsSHA256 string `json:"records_sha256,omitempty"`
 		Requests      int    `json:"requests"`
 		SessionID     string `json:"session_id"`
+		Deleted       bool   `json:"deleted,omitempty"`
+		DeletedAt     string `json:"deleted_at,omitempty"`
 	}
 	items := make([]digestItem, 0, len(sessions))
 	for _, item := range sessions {
@@ -179,6 +234,8 @@ func stableSessionSetDigest(sessions []StableSessionSummary) (string, error) {
 			RecordsSHA256: item.RecordsSHA256,
 			Requests:      item.Requests,
 			SessionID:     item.SessionID,
+			Deleted:       item.Deleted,
+			DeletedAt:     item.DeletedAt,
 		})
 	}
 	sort.Slice(items, func(left, right int) bool { return items[left].SessionID < items[right].SessionID })
@@ -196,12 +253,20 @@ func (snapshot *StableSessionSnapshot) IngestFence() int64 {
 	return snapshot.ingestFence
 }
 
+func (snapshot *StableSessionSnapshot) TombstoneSafeAfterIngestFence() int64 {
+	return snapshot.tombstoneSafeAfter
+}
+
 func (snapshot *StableSessionSnapshot) SessionCount() int {
 	return len(snapshot.sessions)
 }
 
 func (snapshot *StableSessionSnapshot) RequestCount() int {
 	return snapshot.requestCount
+}
+
+func (snapshot *StableSessionSnapshot) DeletedSessionCount() int {
+	return snapshot.deletedCount
 }
 
 func (snapshot *StableSessionSnapshot) SessionSetSHA256() string {
@@ -269,7 +334,7 @@ func (snapshot *StableSessionSnapshot) ExportSessionJSONL(ctx context.Context, s
 			break
 		}
 	}
-	if !found || expected.RecordsSHA256 != expectedDigest {
+	if !found || expected.Deleted || expected.RecordsSHA256 != expectedDigest {
 		return ErrSnapshotCursor
 	}
 	digest := sha256.New()
@@ -302,8 +367,10 @@ func (s *Store) RefreshSessionExportDigests(ctx context.Context, limit int) (int
 	rows, err := s.DB.QueryContext(ctx, `SELECT summaries.session_id
 		FROM session_summaries summaries
 		LEFT JOIN session_export_digests digests ON digests.session_id=summaries.session_id
-		WHERE digests.session_id IS NULL OR digests.max_ingest_sequence<>COALESCE(
-			(SELECT MAX(events.sequence) FROM archive_ingest_events events WHERE events.session_id=summaries.session_id),0
+		WHERE EXISTS(SELECT 1 FROM records current WHERE current.session_id=summaries.session_id)
+		AND (digests.session_id IS NULL OR digests.max_ingest_sequence<>COALESCE(
+			(SELECT MAX(events.sequence) FROM archive_ingest_events events
+				WHERE events.session_id=summaries.session_id OR events.previous_session_id=summaries.session_id),0)
 		)
 		ORDER BY summaries.last_at DESC,summaries.session_id COLLATE BINARY ASC
 		LIMIT ?`, limit)
@@ -397,13 +464,21 @@ func (s *Store) refreshSessionExportDigest(ctx context.Context, sessionID string
 		return err
 	}
 	var requests int
-	var firstAt, lastAt string
+	var firstAt, lastAt sql.NullString
 	var sessionFence int64
 	err = tx.QueryRowContext(ctx, `SELECT COUNT(*),MIN(started_at),MAX(completed_at),
-		COALESCE((SELECT MAX(sequence) FROM archive_ingest_events WHERE session_id=?),0)
-		FROM records WHERE session_id=?`, sessionID, sessionID).Scan(&requests, &firstAt, &lastAt, &sessionFence)
+		COALESCE((SELECT MAX(sequence) FROM archive_ingest_events WHERE session_id=? OR previous_session_id=?),0)
+		FROM records WHERE session_id=?`, sessionID, sessionID, sessionID).Scan(&requests, &firstAt, &lastAt, &sessionFence)
 	if err != nil {
 		_ = tx.Rollback()
+		return err
+	}
+	if requests == 0 {
+		if err = tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
+			return err
+		}
+		_, err = s.DB.ExecContext(ctx, `DELETE FROM session_export_digests
+			WHERE session_id=? AND NOT EXISTS(SELECT 1 FROM records WHERE session_id=?)`, sessionID, sessionID)
 		return err
 	}
 	digest := sha256.New()
@@ -416,11 +491,11 @@ func (s *Store) refreshSessionExportDigest(ctx context.Context, sessionID string
 	}
 	recordsSHA256 := hex.EncodeToString(digest.Sum(nil))
 	_, err = s.DB.ExecContext(ctx, `INSERT INTO session_export_digests(session_id,requests,first_at,last_at,records_sha256,max_ingest_sequence,updated_at)
-		SELECT ?,?,?,?,?,?,? WHERE COALESCE((SELECT MAX(sequence) FROM archive_ingest_events WHERE session_id=?),0)=?
+		SELECT ?,?,?,?,?,?,? WHERE COALESCE((SELECT MAX(sequence) FROM archive_ingest_events WHERE session_id=? OR previous_session_id=?),0)=?
 		ON CONFLICT(session_id) DO UPDATE SET
 			requests=excluded.requests,first_at=excluded.first_at,last_at=excluded.last_at,
 			records_sha256=excluded.records_sha256,max_ingest_sequence=excluded.max_ingest_sequence,updated_at=excluded.updated_at`,
-		sessionID, requests, firstAt, lastAt, recordsSHA256, sessionFence, canonicalTimestamp(time.Now()), sessionID, sessionFence)
+		sessionID, requests, firstAt.String, lastAt.String, recordsSHA256, sessionFence, canonicalTimestamp(time.Now()), sessionID, sessionID, sessionFence)
 	return err
 }
 

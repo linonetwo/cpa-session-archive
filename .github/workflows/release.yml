@@ -1,57 +1,248 @@
 name: release
+
 on:
   push:
-    tags: ["v*"]
-  workflow_dispatch:
+    tags: ["v0.8.0"]
+
+concurrency:
+  group: release-v0.8.0
+  cancel-in-progress: false
+
 permissions:
-  contents: write
-  packages: write
+  contents: read
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/cpa-session-archive
+
 jobs:
-  image:
+  verify:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate exact source, tag, version, and successful main CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = "linonetwo/cpa-session-archive"
+          test "$GITHUB_REF" = "refs/tags/v0.8.0"
+          test "$GITHUB_REF_NAME" = "v0.8.0"
+          test "$(git rev-parse --verify HEAD)" = "$GITHUB_SHA"
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(sed -n 's/^const Version = "\([^"]*\)"$/\1/p' internal/archive/version.go)" = "0.8.0"
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+          runs="$RUNNER_TEMP/ci-runs.json"
+          curl --fail --silent --show-error --location \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header "Accept: application/vnd.github+json" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$GITHUB_SHA&event=push&status=completed&per_page=20" \
+            --output "$runs"
+          jq -e --arg sha "$GITHUB_SHA" '
+            [.workflow_runs[] |
+              select(.head_sha == $sha and .head_branch == "main" and
+                     .event == "push" and .status == "completed" and
+                     .conclusion == "success")] | length >= 1
+          ' "$runs" >/dev/null
+
+  binaries:
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: "1.24.x"
+          cache: true
+      - name: Build immutable Linux amd64 release binaries
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y gcc libc6-dev zip
+          mkdir -p dist/package
+          SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
+          export SOURCE_DATE_EPOCH
+          ldflags='-s -w -buildid='
+          CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -trimpath -buildvcs=false -ldflags="$ldflags" -tags cshared -buildmode=c-shared -o dist/cpa-session-archive-linux-amd64.so ./cmd/cpa-session-archive
+          CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -trimpath -buildvcs=false -ldflags="$ldflags" -o dist/cpa-session-collector-linux-amd64 ./cmd/cpa-session-collector
+          CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -trimpath -buildvcs=false -ldflags="$ldflags" -o dist/cpa-session-identity-migrate-linux-amd64 ./cmd/cpa-session-identity-migrate
+          CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -trimpath -buildvcs=false -ldflags="$ldflags" -o dist/cpa-session-archive-backup-linux-amd64 ./cmd/cpa-session-archive-backup
+          cp dist/cpa-session-archive-linux-amd64.so dist/cpa-session-archive-linux-amd64.h dist/package/
+          find dist -type f -exec touch --date="@$SOURCE_DATE_EPOCH" {} +
+          (cd dist/package && zip -X ../cpa-session-archive_0.8.0_linux_amd64.zip cpa-session-archive-linux-amd64.so cpa-session-archive-linux-amd64.h)
+          rm -rf dist/package
+          (cd dist && sha256sum -- * | LC_ALL=C sort > SHA256SUMS)
+      - name: Upload binaries for the release assembly
+        uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808 # v4
+        with:
+          name: cpa-session-archive-v0.8.0-binaries-${{ github.sha }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  image:
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+        with:
+          version: "11.24.0"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "24.18.0"
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/metadata-action@v5
-        id: meta
-        with:
-          images: ghcr.io/linonetwo/cpa-session-archive
-          tags: |
-            type=ref,event=tag
-            type=raw,value=latest
-      - uses: docker/build-push-action@v6
+      - name: Build and publish the immutable SHA image
+        id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           platforms: linux/amd64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-  binaries:
+          outputs: type=image,push=true,oci-mediatypes=true,oci-artifact=true
+          tags: ${{ env.IMAGE }}:${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=0.8.0
+          cache-from: type=gha,scope=cpa-session-archive
+          cache-to: type=gha,mode=max,scope=cpa-session-archive
+          provenance: mode=max
+          sbom: true
+      - name: Install checksum-pinned crane registry client
+        run: |
+          archive="$RUNNER_TEMP/go-containerregistry_Linux_x86_64.tar.gz"
+          destination="$RUNNER_TEMP/crane-bin"
+          curl --fail --location --retry 3 \
+            https://github.com/google/go-containerregistry/releases/download/v0.21.9/go-containerregistry_Linux_x86_64.tar.gz \
+            --output "$archive"
+          echo '5c16d8ddb971cb1d5e6ed8b1e743da8224414eeba2c2762d8f1a61b2f095699e  '"$archive" | sha256sum --check
+          mkdir -p "$destination"
+          tar -xzf "$archive" -C "$destination" crane
+          echo "$destination" >> "$GITHUB_PATH"
+      - name: Scan the exact published digest for high and critical vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE }}@${{ steps.build.outputs.digest }}
+          scanners: vuln
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
+          ignore-unfixed: false
+          exit-code: 1
+          format: table
+          timeout: 15m0s
+      - name: Verify registry resolution, public digest access, SBOM, and provenance
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          test "$(crane digest "$IMAGE:$GITHUB_SHA")" = "$DIGEST"
+          pnpm exec tsx scripts/verify_buildkit_attestations.ts \
+            --crane "$(command -v crane)" \
+            --image "$IMAGE" \
+            --digest "$DIGEST" \
+            --output-dir native-attestations
+          anonymous_config="$(mktemp -d "$RUNNER_TEMP/anonymous-registry.XXXXXX")"
+          trap 'rm -rf -- "$anonymous_config"' EXIT HUP INT TERM
+          DOCKER_CONFIG="$anonymous_config" crane manifest "$IMAGE@$DIGEST" >/dev/null
+          jq --null-input \
+            --arg image "$IMAGE" \
+            --arg tag "$GITHUB_SHA" \
+            --arg digest "$DIGEST" \
+            --arg revision "$GITHUB_SHA" \
+            --arg run_url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            '{schema_version:1,image:$image,tag:$tag,digest:$digest,revision:$revision,platform:"linux/amd64",reference:($image+"@"+$digest),run_url:$run_url}' \
+            > image-digest.json
+      - name: Upload verified image evidence for the release assembly
+        uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808 # v4
+        with:
+          name: cpa-session-archive-v0.8.0-image-${{ github.sha }}
+          path: |
+            image-digest.json
+            native-attestations/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: [binaries, image]
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          go-version: "1.24.x"
-          cache: true
-      - run: sudo apt-get update && sudo apt-get install -y gcc libc6-dev
-      - run: go test ./...
-      - run: |
-          mkdir dist
-          CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -buildvcs=false -tags cshared -buildmode=c-shared -o dist/cpa-session-archive-linux-amd64.so ./cmd/cpa-session-archive
-          CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -buildvcs=false -o dist/cpa-session-collector-linux-amd64 ./cmd/cpa-session-collector
-          version="${GITHUB_REF_NAME#v}"
-          mkdir package
-          cp dist/cpa-session-archive-linux-amd64.so package/cpa-session-archive.so
-          (cd package && zip "../dist/cpa-session-archive_${version}_linux_amd64.zip" cpa-session-archive.so)
-          sha256sum "dist/cpa-session-archive_${version}_linux_amd64.zip" > dist/checksums.txt
-          sha256sum dist/* > dist/SHA256SUMS
-      - uses: softprops/action-gh-release@v2
+          pattern: cpa-session-archive-v0.8.0-*-${{ github.sha }}
+          path: dist
+          merge-multiple: true
+      - name: Assemble and verify the immutable release manifest
+        run: |
+          set -euo pipefail
+          test -s dist/image-digest.json
+          test -s dist/SHA256SUMS
+          (cd dist && sha256sum --check SHA256SUMS)
+          assets="$RUNNER_TEMP/assets.json"
+          find dist -type f ! -name release-manifest.json -printf '%P\n' | LC_ALL=C sort |
+            while IFS= read -r name; do
+              jq --null-input --arg name "$name" --arg sha256 "$(sha256sum "dist/$name" | cut -d' ' -f1)" \
+                --argjson bytes "$(stat -c '%s' "dist/$name")" '{name:$name,sha256:$sha256,bytes:$bytes}'
+            done | jq --slurp '.' > "$assets"
+          jq --null-input \
+            --arg version "0.8.0" \
+            --arg commit "$GITHUB_SHA" \
+            --arg source "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+            --arg run_url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            --slurpfile image dist/image-digest.json \
+            --slurpfile assets "$assets" \
+            '{schema_version:1,version:$version,commit:$commit,source:$source,run_url:$run_url,image:$image[0],assets:$assets[0]}' \
+            > dist/release-manifest.json
+          jq -e --arg commit "$GITHUB_SHA" '
+            .schema_version == 1 and .version == "0.8.0" and .commit == $commit and
+            .image.revision == $commit and .image.tag == $commit and
+            (.image.digest | test("^sha256:[0-9a-f]{64}$")) and
+            (.assets | length >= 6)
+          ' dist/release-manifest.json >/dev/null
+      - name: Publish v0.8.0 GitHub Release only after both artifact sets verify
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
-          files: dist/*
+          tag_name: v0.8.0
+          name: cpa-session-archive v0.8.0
           generate_release_notes: true
+          make_latest: false
+          fail_on_unmatched_files: true
+          files: |
+            dist/cpa-session-archive-linux-amd64.so
+            dist/cpa-session-archive-linux-amd64.h
+            dist/cpa-session-archive_0.8.0_linux_amd64.zip
+            dist/cpa-session-collector-linux-amd64
+            dist/cpa-session-identity-migrate-linux-amd64
+            dist/cpa-session-archive-backup-linux-amd64
+            dist/SHA256SUMS
+            dist/image-digest.json
+            dist/native-attestations/*
+            dist/release-manifest.json

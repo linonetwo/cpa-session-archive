@@ -153,8 +153,8 @@ func TestBackfillTurnFacetProjection(t *testing.T) {
 		StartedAt:   now,
 		CompletedAt: now,
 		Facets: map[string][]string{
-			"turn.id":     {"turn-facet"},
-			"tool.name":   {"shell"},
+			"turn.id":      {"turn-facet"},
+			"tool.name":    {"shell"},
 			"request.kind": {"compaction"},
 		},
 	}
@@ -206,7 +206,7 @@ func TestSessionTurnPageInfersKimiTurnsFromSummaryRuns(t *testing.T) {
 
 func TestCleanTurnTextRemovesClientWrappers(t *testing.T) {
 	for input, expected := range map[string]string{
-		"## My request for Codex:\nDo the work": "Do the work",
+		"## My request for Codex:\nDo the work":              "Do the work",
 		"&lt;userRequest&gt;Review this&lt;/userRequest&gt;": "Review this",
 	} {
 		if actual := cleanTurnText(input); actual != expected {
@@ -293,8 +293,8 @@ func TestSessionTurnDetailUsesLightweightTimelineProjection(t *testing.T) {
 		StartedAt:       now,
 		CompletedAt:     now,
 		Facets: map[string][]string{
-			"turn.id":     {"projected-turn"},
-			"tool.name":   {"shell"},
+			"turn.id":      {"projected-turn"},
+			"tool.name":    {"shell"},
 			"tool.call_id": {"call-1"},
 		},
 	}

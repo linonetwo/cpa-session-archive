@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -13,6 +14,48 @@ import (
 	"testing"
 	"time"
 )
+
+func TestStableSessionSetDigestPreservesV1PresentSummaryContract(t *testing.T) {
+	item := StableSessionSummary{
+		SessionID:     "session",
+		Requests:      2,
+		FirstAt:       "2026-08-21T01:02:03.000000Z",
+		LastAt:        "2026-08-21T01:02:04.000000Z",
+		RecordsSHA256: strings.Repeat("a", 64),
+	}
+	got, err := stableSessionSetDigest([]StableSessionSummary{item})
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyJSON, err := json.Marshal([]struct {
+		FirstAt       string `json:"first_at"`
+		LastAt        string `json:"last_at"`
+		RecordsSHA256 string `json:"records_sha256"`
+		Requests      int    `json:"requests"`
+		SessionID     string `json:"session_id"`
+	}{{item.FirstAt, item.LastAt, item.RecordsSHA256, item.Requests, item.SessionID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := sha256.Sum256(legacyJSON)
+	if got != hex.EncodeToString(want[:]) {
+		t.Fatalf("present-only v1 set digest changed: got=%s want=%s", got, hex.EncodeToString(want[:]))
+	}
+	tombstoneA := StableSessionSummary{SessionID: "deleted", LastAt: "2026-08-21T01:02:05.000000Z", Deleted: true, DeletedAt: "2026-08-21T01:02:05.000000Z"}
+	tombstoneB := tombstoneA
+	tombstoneB.DeletedAt = "2026-08-21T01:02:06.000000Z"
+	digestA, err := stableSessionSetDigest([]StableSessionSummary{tombstoneA})
+	if err != nil {
+		t.Fatal(err)
+	}
+	digestB, err := stableSessionSetDigest([]StableSessionSummary{tombstoneB})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if digestA == digestB {
+		t.Fatal("tombstone semantics were omitted from the session set digest")
+	}
+}
 
 func refreshAllSessionDigests(t *testing.T, store *Store) {
 	t.Helper()
@@ -86,13 +129,13 @@ func TestStableSnapshotPaginatesTiesAndExcludesLaterWrites(t *testing.T) {
 
 	oldFence := snapshot.IngestFence()
 	if err = store.PutBatch([]Record{{
-		RequestID:        "late-request",
-		SessionID:        "late-session",
-		StartedAt:        when.Add(-time.Hour),
-		CompletedAt:      when.Add(-time.Hour),
-		OriginalRequest:  []byte(`{"input":"late"}`),
-		Response:         []byte(`{"output":"included next time"}`),
-		Outcome:          "succeeded",
+		RequestID:       "late-request",
+		SessionID:       "late-session",
+		StartedAt:       when.Add(-time.Hour),
+		CompletedAt:     when.Add(-time.Hour),
+		OriginalRequest: []byte(`{"input":"late"}`),
+		Response:        []byte(`{"output":"included next time"}`),
+		Outcome:         "succeeded",
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -115,6 +158,95 @@ func TestStableSnapshotPaginatesTiesAndExcludesLaterWrites(t *testing.T) {
 	}
 	if len(delta) != 1 || delta[0].SessionID != "late-session" {
 		t.Fatalf("late old-timestamp record missing from delta: %+v", delta)
+	}
+}
+
+func TestStableDeltaIncludesDeleteAndOldIdentityTombstones(t *testing.T) {
+	store, err := OpenStore(filepath.Join(t.TempDir(), "archive.sqlite"), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.DB.Close()
+	when := time.Date(2026, 8, 21, 5, 4, 3, 0, time.UTC)
+	if err = store.PutBatch([]Record{
+		{RequestID: "move", SessionID: "session-old", StartedAt: when, CompletedAt: when},
+		{RequestID: "delete", SessionID: "session-deleted", StartedAt: when, CompletedAt: when},
+		{RequestID: "partial-a", SessionID: "session-partial", StartedAt: when, CompletedAt: when},
+		{RequestID: "partial-b", SessionID: "session-partial", StartedAt: when, CompletedAt: when},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	refreshAllSessionDigests(t, store)
+	initial, err := store.BeginStableSessionSnapshot(time.Unix(0, 0), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	priorFence := initial.IngestFence()
+	if err = initial.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err = store.DB.Exec(`UPDATE records SET session_id='session-new' WHERE request_id='move';
+		DELETE FROM records WHERE request_id='delete';
+		DELETE FROM records WHERE request_id='partial-a'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.BeginStableSessionSnapshot(when.Add(24*time.Hour), &priorFence); !errors.Is(err, ErrSnapshotProjectionNotReady) {
+		t.Fatalf("changed present sessions did not require exact new digests: %v", err)
+	}
+	if updated, refreshErr := store.RefreshQueuedSessionExportDigests(context.Background(), 64); refreshErr != nil || updated != 2 {
+		t.Fatalf("changed digest refresh updated=%d err=%v", updated, refreshErr)
+	}
+
+	delta, err := store.BeginStableSessionSnapshot(when.Add(24*time.Hour), &priorFence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer delta.Close()
+	items, next, err := delta.Page("", "", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next != nil || len(items) != 4 || delta.SessionCount() != 4 || delta.RequestCount() != 2 || delta.DeletedSessionCount() != 2 {
+		t.Fatalf("delta metadata items=%+v next=%+v sessions=%d requests=%d deleted=%d", items, next, delta.SessionCount(), delta.RequestCount(), delta.DeletedSessionCount())
+	}
+	byID := map[string]StableSessionSummary{}
+	for _, item := range items {
+		byID[item.SessionID] = item
+	}
+	for _, sessionID := range []string{"session-old", "session-deleted"} {
+		item := byID[sessionID]
+		if !item.Deleted || item.Requests != 0 || item.DeletedAt == "" || item.LastAt != item.DeletedAt || item.FirstAt != "" || item.RecordsSHA256 != "" {
+			t.Fatalf("invalid tombstone for %s: %+v", sessionID, item)
+		}
+		if err = delta.ExportSessionJSONL(context.Background(), sessionID, "", &bytes.Buffer{}); !errors.Is(err, ErrSnapshotCursor) {
+			t.Fatalf("tombstone %s was exportable: %v", sessionID, err)
+		}
+	}
+	if moved := byID["session-new"]; moved.Deleted || moved.Requests != 1 || len(moved.RecordsSHA256) != 64 {
+		t.Fatalf("new session identity is not a complete replacement: %+v", moved)
+	}
+	if partial := byID["session-partial"]; partial.Deleted || partial.Requests != 1 || len(partial.RecordsSHA256) != 64 {
+		t.Fatalf("partially deleted session is not a replacement summary: %+v", partial)
+	}
+	var previous string
+	if err = store.DB.QueryRow(`SELECT previous_session_id FROM archive_ingest_events WHERE request_id='move' ORDER BY sequence DESC LIMIT 1`).Scan(&previous); err != nil {
+		t.Fatal(err)
+	}
+	if previous != "session-old" {
+		t.Fatalf("session move lost old identity: %q", previous)
+	}
+	if updated, refreshErr := store.RefreshSessionExportDigests(context.Background(), 64); refreshErr != nil || updated != 0 {
+		t.Fatalf("deleted stale summaries kept the offline digest sweep busy: updated=%d err=%v", updated, refreshErr)
+	}
+
+	full, err := store.BeginStableSessionSnapshot(time.Unix(0, 0), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer full.Close()
+	if full.DeletedSessionCount() != 0 || full.SessionCount() != 2 {
+		t.Fatalf("full snapshot leaked historical tombstones: sessions=%d deleted=%d", full.SessionCount(), full.DeletedSessionCount())
 	}
 }
 
@@ -214,6 +346,55 @@ func TestOpeningLegacyArchiveDoesNotBackfillEventRows(t *testing.T) {
 	}
 	if events != 0 || sequence != 1 {
 		t.Fatalf("startup performed an event backfill: events=%d clock=%d", events, sequence)
+	}
+}
+
+func TestOpeningLegacyEventSchemaCapturesOldSessionIdentity(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "archive.sqlite")
+	store, err := OpenStore(path, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	when := time.Now().UTC()
+	if err = store.PutBatch([]Record{{RequestID: "legacy", SessionID: "legacy-old", StartedAt: when, CompletedAt: when}}); err != nil {
+		t.Fatal(err)
+	}
+	var legacyFence int64
+	if err = store.DB.QueryRow(`SELECT sequence FROM archive_ingest_clock WHERE id=1`).Scan(&legacyFence); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.DB.Exec(`DROP TRIGGER archive_records_insert;
+		DROP TRIGGER archive_records_update;
+		DROP TRIGGER archive_records_delete;
+		DROP INDEX idx_archive_ingest_events_previous_session_sequence;
+		DROP TABLE archive_snapshot_contract;
+		ALTER TABLE archive_ingest_events DROP COLUMN previous_session_id`); err != nil {
+		t.Fatal(err)
+	}
+	if err = store.DB.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = OpenStore(path, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.DB.Close()
+	unsafeFence := legacyFence - 1
+	if snapshot, snapshotErr := store.BeginStableSessionSnapshot(time.Unix(0, 0), &unsafeFence); !errors.Is(snapshotErr, ErrSnapshotTombstoneHistory) {
+		if snapshot != nil {
+			_ = snapshot.Close()
+		}
+		t.Fatalf("pre-upgrade delta fence did not fail closed: %v", snapshotErr)
+	}
+	if _, err = store.DB.Exec(`UPDATE records SET session_id='legacy-new' WHERE request_id='legacy'`); err != nil {
+		t.Fatal(err)
+	}
+	var current, previous string
+	if err = store.DB.QueryRow(`SELECT session_id,previous_session_id FROM archive_ingest_events WHERE request_id='legacy' ORDER BY sequence DESC LIMIT 1`).Scan(&current, &previous); err != nil {
+		t.Fatal(err)
+	}
+	if current != "legacy-new" || previous != "legacy-old" {
+		t.Fatalf("upgraded trigger current=%q previous=%q", current, previous)
 	}
 }
 

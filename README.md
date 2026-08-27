@@ -37,12 +37,23 @@ instead of being silently discarded.
 
 ## Build
 
-Tagged releases are built and published to GHCR by GitHub Actions. The same
-workflow runs Go tests, browser end-to-end tests, native plugin builds, and an
-image build before publishing; local or cluster nodes do not need to run
-Docker builds.
+The protected `main` branch runs the complete Go, race, TypeScript, browser,
+native-binary, and container gates once. The exact `v0.8.0` tag may publish
+only after GitHub verifies that the same 40-character commit has a successful
+`main` CI run. The release workflow then publishes one GHCR tag containing
+that complete commit SHA, verifies the returned digest, native SBOM and SLSA
+provenance, confirms anonymous digest access, and records the immutable image
+reference in `release-manifest.json`. It never publishes `latest`, `main`, or a
+version image tag.
 
-The image contains both /plugin/cpa-session-archive.so and the collector executable.
+The GitHub Release contains the native plugin (`.so` and generated `.h`), the
+collector, identity migrator, online backup tool, checksums, image digest, and
+attestation evidence. See [v0.8.0 release contract](docs/release-v0.8.0.md).
+Local and cluster nodes must consume the recorded `ghcr.io/...@sha256:...`
+reference and never build a deployment image themselves.
+
+The image contains `/plugin/cpa-session-archive.so`, the collector,
+`cpa-session-identity-migrate`, and `cpa-session-archive-backup`.
 
 ## CPA configuration
 
@@ -108,6 +119,25 @@ The same mapping envelope can be sent to `PUT /v1/identity-mappings`.
 Backfill updates only relational projections and facet indexes; CAS hashes and
 lossless payload bytes remain unchanged. Unmapped historical `key_id` strings
 are not guessed to be credential hashes.
+
+The historical attribution normalizer is now TypeScript and runs on the pinned
+Node.js 24 toolchain:
+
+~~~bash
+pnpm exec tsx scripts/migrate_attribution.ts \
+  --database /data/archive.sqlite \
+  --kind archive \
+  --key-map '{}' \
+  --model-map '@model-map.json'
+~~~
+
+For archive databases, this tool only corrects model projections and rejects a
+non-empty key map. Raw `key_id` values are immutable audit data; credential
+rotation and stable ownership must use `cpa-session-identity-migrate`. The
+`cpamp` mode retains the legacy usage-event key/model correction path. Both
+modes create an online SQLite backup unless an explicit existing external
+snapshot reference is supplied. Repository automation and test scripts use
+TypeScript only; Go remains the product implementation language.
 
 ## Management UI and faceted search
 

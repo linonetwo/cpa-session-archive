@@ -1,28 +1,65 @@
 name: ci
+
 on:
   push:
+    branches: [main]
   pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: "1.24.x"
           cache: true
-      - uses: actions/setup-node@v4
+      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
         with:
-          node-version: "22"
-      - uses: pnpm/action-setup@v4
+          version: "11.24.0"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          version: "11"
-      - run: sudo apt-get update && sudo apt-get install -y gcc libc6-dev
-      - run: go test ./...
-      - run: bash tests/ops/temporary_forgejo_harbor_contract.sh
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm exec playwright install --with-deps chromium
-      - run: pnpm test:e2e
-      - run: CGO_ENABLED=1 go build -tags cshared -buildmode=c-shared -o /tmp/cpa-session-archive.so ./cmd/cpa-session-archive
-      - run: CGO_ENABLED=1 go build -o /tmp/cpa-session-collector ./cmd/cpa-session-collector
-      - run: docker build -t cpa-session-archive:test .
+          node-version: "24.18.0"
+          cache: pnpm
+      - name: Install native and TypeScript dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc libc6-dev
+          pnpm install --frozen-lockfile
+      - name: Repository and TypeScript contracts
+        run: |
+          pnpm typecheck
+          pnpm test:scripts
+      - name: Go formatting, vet, complete suite, and race detector
+        run: |
+          test -z "$(gofmt -l .)"
+          go vet ./...
+          go test -count=1 ./...
+          go test -count=1 -race ./...
+      - name: Stable snapshot migration contract
+        run: |
+          go test -count=1 ./internal/archive -run 'Test(StableSnapshotPaginatesTiesAndExcludesLaterWrites|StableSnapshotExportIsCanonicalAndSnapshotBound|ClosingStableSnapshotReleasesWALCheckpoint|StableSnapshotQueuesOnlyRequestedMissingDigests|OpeningLegacyArchiveDoesNotBackfillEventRows)$'
+          go test -count=1 ./cmd/cpa-session-collector -run 'Test(StableSessionsHTTPContractFailsClosedAndReplays|StableSnapshotTicketExportsExactSnapshot|LegacySessionsResponseRemainsAList|FullSnapshotRequiresOfflineOptIn|ExportTicketHeadIsReusableWithoutStreamingDatabase)$'
+      - name: Browser contract
+        run: |
+          pnpm exec playwright install --with-deps chromium
+          pnpm test:e2e
+      - name: Build every release binary
+        run: |
+          mkdir -p /tmp/cpa-session-archive-ci
+          CGO_ENABLED=1 go build -trimpath -buildvcs=false -tags cshared -buildmode=c-shared -o /tmp/cpa-session-archive-ci/cpa-session-archive.so ./cmd/cpa-session-archive
+          CGO_ENABLED=1 go build -trimpath -buildvcs=false -o /tmp/cpa-session-archive-ci/cpa-session-collector ./cmd/cpa-session-collector
+          CGO_ENABLED=1 go build -trimpath -buildvcs=false -o /tmp/cpa-session-archive-ci/cpa-session-identity-migrate ./cmd/cpa-session-identity-migrate
+          CGO_ENABLED=1 go build -trimpath -buildvcs=false -o /tmp/cpa-session-archive-ci/cpa-session-archive-backup ./cmd/cpa-session-archive-backup
+      - name: Build the release container without publishing
+        run: docker build --pull -t cpa-session-archive:test .

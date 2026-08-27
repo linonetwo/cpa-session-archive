@@ -110,6 +110,11 @@ func OpenStore(path string, storeUpstream bool) (*Store, error) {
 		return nil, e
 	}
 	_, _ = db.Exec(`ALTER TABLE previewed_requests ADD COLUMN version INTEGER NOT NULL DEFAULT 1`)
+	// Existing 0.8 archives have the ingest event table but not the old
+	// session identity needed to represent a session_id move as a delta. The
+	// best-effort ALTER is intentionally separate: a new archive creates the
+	// column below, while an upgraded archive adds it without touching rows.
+	_, _ = db.Exec(`ALTER TABLE archive_ingest_events ADD COLUMN previous_session_id TEXT NOT NULL DEFAULT ''`)
 	if _, e = db.Exec(`CREATE TABLE IF NOT EXISTS archive_ingest_clock(
 		id INTEGER PRIMARY KEY CHECK(id=1),
 		sequence INTEGER NOT NULL
@@ -119,9 +124,11 @@ func OpenStore(path string, storeUpstream bool) (*Store, error) {
 		sequence INTEGER PRIMARY KEY,
 		request_id TEXT NOT NULL,
 		session_id TEXT NOT NULL,
+		previous_session_id TEXT NOT NULL DEFAULT '',
 		recorded_at TEXT NOT NULL
 	);
 	CREATE INDEX IF NOT EXISTS idx_archive_ingest_events_session_sequence ON archive_ingest_events(session_id,sequence);
+	CREATE INDEX IF NOT EXISTS idx_archive_ingest_events_previous_session_sequence ON archive_ingest_events(previous_session_id,sequence);
 	CREATE INDEX IF NOT EXISTS idx_archive_ingest_events_request_sequence ON archive_ingest_events(request_id,sequence);
 	CREATE TABLE IF NOT EXISTS session_export_digests(
 		session_id TEXT PRIMARY KEY,
@@ -132,21 +139,33 @@ func OpenStore(path string, storeUpstream bool) (*Store, error) {
 		max_ingest_sequence INTEGER NOT NULL,
 		updated_at TEXT NOT NULL
 	);
-	CREATE TRIGGER IF NOT EXISTS archive_records_insert AFTER INSERT ON records BEGIN
+	DROP TRIGGER IF EXISTS archive_records_insert;
+	DROP TRIGGER IF EXISTS archive_records_delete;
+	DROP TRIGGER IF EXISTS archive_records_update;
+	CREATE TRIGGER archive_records_insert AFTER INSERT ON records BEGIN
 		UPDATE archive_ingest_clock SET sequence=sequence+1 WHERE id=1;
-		INSERT INTO archive_ingest_events(sequence,request_id,session_id,recorded_at)
-			SELECT sequence,NEW.request_id,NEW.session_id,strftime('%Y-%m-%dT%H:%M:%fZ','now') FROM archive_ingest_clock WHERE id=1;
+		INSERT INTO archive_ingest_events(sequence,request_id,session_id,previous_session_id,recorded_at)
+			SELECT sequence,NEW.request_id,NEW.session_id,'',strftime('%Y-%m-%dT%H:%M:%fZ','now') FROM archive_ingest_clock WHERE id=1;
 	END;
-	CREATE TRIGGER IF NOT EXISTS archive_records_delete AFTER DELETE ON records BEGIN
+	CREATE TRIGGER archive_records_delete AFTER DELETE ON records BEGIN
 		UPDATE archive_ingest_clock SET sequence=sequence+1 WHERE id=1;
-		INSERT INTO archive_ingest_events(sequence,request_id,session_id,recorded_at)
-			SELECT sequence,OLD.request_id,OLD.session_id,strftime('%Y-%m-%dT%H:%M:%fZ','now') FROM archive_ingest_clock WHERE id=1;
+		INSERT INTO archive_ingest_events(sequence,request_id,session_id,previous_session_id,recorded_at)
+			SELECT sequence,OLD.request_id,OLD.session_id,'',strftime('%Y-%m-%dT%H:%M:%fZ','now') FROM archive_ingest_clock WHERE id=1;
 	END;
-	CREATE TRIGGER IF NOT EXISTS archive_records_update AFTER UPDATE ON records BEGIN
+	CREATE TRIGGER archive_records_update AFTER UPDATE ON records BEGIN
 		UPDATE archive_ingest_clock SET sequence=sequence+1 WHERE id=1;
-		INSERT INTO archive_ingest_events(sequence,request_id,session_id,recorded_at)
-			SELECT sequence,NEW.request_id,NEW.session_id,strftime('%Y-%m-%dT%H:%M:%fZ','now') FROM archive_ingest_clock WHERE id=1;
-	END`); e != nil {
+		INSERT INTO archive_ingest_events(sequence,request_id,session_id,previous_session_id,recorded_at)
+			SELECT sequence,NEW.request_id,NEW.session_id,
+				CASE WHEN OLD.session_id<>NEW.session_id THEN OLD.session_id ELSE '' END,
+				strftime('%Y-%m-%dT%H:%M:%fZ','now') FROM archive_ingest_clock WHERE id=1;
+	END;
+	CREATE TABLE IF NOT EXISTS archive_snapshot_contract(
+		id INTEGER PRIMARY KEY CHECK(id=1),
+		schema_version INTEGER NOT NULL,
+		tombstone_safe_after_sequence INTEGER NOT NULL
+	);
+	INSERT OR IGNORE INTO archive_snapshot_contract(id,schema_version,tombstone_safe_after_sequence)
+		SELECT 1,2,sequence FROM archive_ingest_clock WHERE id=1`); e != nil {
 		return nil, e
 	}
 	s := &Store{DB: db, DBPath: path, StoreUpstream: storeUpstream}

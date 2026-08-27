@@ -1,9 +1,11 @@
 # Stable session snapshot export
 
 Version 0.8 implements the `session-snapshot-cursor-v1` source contract used by
-incremental archive migration. The legacy `GET /v1/sessions` list and legacy
-export tickets remain unchanged unless the stable protocol is explicitly
-requested.
+incremental archive migration. Snapshot responses also declare
+`snapshot_schema_version: 2`, which adds explicit deleted-session tombstones
+without changing the v1 cursor encoding. The legacy `GET /v1/sessions` list
+and legacy export tickets remain unchanged unless the stable protocol is
+explicitly requested.
 
 ## Token Center collector-direct integration
 
@@ -20,8 +22,9 @@ tickets through `GET /v1/export-tickets`, and downloads the returned relative
 URL from the same origin. It must preserve the exact query bounds and
 `after_ingest_fence` until a complete projection and every per-session digest
 are verified. HTTP 503 means retry digest preparation, 410 means restart from
-the last committed target checkpoint, and 429 means wait for snapshot
-capacity. Never advance the target checkpoint on any of those responses.
+the last committed target checkpoint, 409 means the requested fence predates
+provable tombstone history, and 429 means wait for snapshot capacity. Never
+advance the target checkpoint on any of those responses.
 
 The only full-snapshot switch is
 `ARCHIVE_ALLOW_OFFLINE_FULL_SNAPSHOT=true`. It is for an isolated same-storage
@@ -42,10 +45,21 @@ GET /v1/sessions?cursor_protocol=session-snapshot-cursor-v1
 A successful response contains:
 
 - `cursor_protocol`, opaque `snapshot`, and decimal `ingest_fence`;
+- `snapshot_schema_version`, `tombstone_safe_after_ingest_fence`, and
+  `deleted_session_count`;
 - `session_count`, `request_count`, and `session_set_sha256`;
 - `sessions`, each with `session_id`, `requests`, canonical UTC
   `first_at`/`last_at`, and `records_sha256`;
 - `complete` and an opaque `next_cursor`.
+
+A deleted session is represented as
+`{"session_id":"...","requests":0,"last_at":"...","deleted":true,"deleted_at":"..."}`.
+It has no `records_sha256` and cannot receive an export ticket. A partial
+delete or session-id move produces a tombstone for the old identity and a
+complete replacement summary for the surviving/new identity. Importers must
+apply present summaries and tombstones atomically, recompute the schema-v2 set
+digest, and only then advance the checkpoint. They must reject schema versions
+or tombstone fields they do not understand.
 
 Repeat the same lower bound, prior fence and limit with the returned
 `snapshot` and `cursor`. Pages are ordered by
@@ -66,9 +80,12 @@ visible to the snapshot, ordered by request id. Each canonical JSON line has
 sorted object keys, UTF-8 text, no insignificant whitespace, and one newline.
 
 Altered, cross-snapshot, expired, wrong-limit, or wrong-bound cursors fail
-closed. Expired snapshot requests return HTTP 410, capacity returns HTTP 429,
-and a projection still being prepared returns HTTP 503. Unknown stable query
-parameters never fall through to legacy facet filtering.
+closed. Expired snapshot and ticket requests return JSON HTTP 410 before any
+attachment headers are sent, capacity returns HTTP 429, and a projection still
+being prepared returns HTTP 503. Unknown stable query parameters never fall
+through to legacy facet filtering. An `after_ingest_fence` older than
+`tombstone_safe_after_ingest_fence` returns HTTP 409 rather than guessing which
+old session was changed or deleted.
 
 ## Snapshot and WAL safety
 
@@ -92,7 +109,8 @@ checkpoint attempt and create a new snapshot.
 
 `GET /v1/stats` exposes `active_snapshots`,
 `oldest_snapshot_age_seconds`, `max_active_snapshots`, both TTLs,
-`pending_session_digests`, and `pending_session_digest_capacity`. It never
+`pending_session_digests`, `pending_session_digest_capacity`,
+`snapshot_schema_version`, and `tombstone_safe_after_ingest_fence`. It never
 exposes opaque snapshot identities or archived metadata.
 
 ## Ingest fence and upgrade behavior
@@ -109,6 +127,11 @@ The DDL needs only a short SQLite schema write lock. It performs no full-table
 UPDATE, no payload scan, and no blob rewrite. The old binary ignores the new
 tables and can be restored without a data downgrade; the triggers continue to
 capture mutations while that binary runs.
+
+The v2 upgrade records `tombstone_safe_after_ingest_fence`. DELETE and UPDATE
+triggers retain the old session identity from that fence onward. No claim is
+made for deletions or session-id rewrites that happened before the upgrade, so
+older delta fences fail with HTTP 409.
 
 The first snapshot has no prior fence and enumerates all records in its fixed
 transaction, so historical rows do not need event rows. Later snapshots select
@@ -128,9 +151,26 @@ database. The default collector rejects it with HTTP 403.
 
 For an initial migration:
 
-1. Create a storage-level clone or quiet copy on the same cluster storage.
-   For a large archive, keep it on Longhorn/MinIO-adjacent infrastructure; do
-   not copy the 10.7 GB database between machines.
+1. First run the v0.8 collector on the active source so its ingest clock and
+   mutation triggers are installed; a v0.7 database has no safe delta fence.
+   Then mount that source PVC read-only where possible and a distinct empty
+   destination PVC in a one-shot Pod. Run the v0.8 binary's SQLite online
+   backup API, never a filesystem copy of the database/WAL pair:
+
+   ```bash
+   cpa-session-archive-backup \
+     --source /source/archive.sqlite \
+     --destination /clone/archive.sqlite \
+     --timeout 30m
+   ```
+
+   The destination must not already exist. The tool includes committed WAL
+   data, writes a `0600` temporary database, runs `integrity_check`, and
+   atomically publishes without replacement. Its JSON output contains only
+   record/session counts, source ingest fence, file SHA-256, and byte size; it
+   never prints paths, session IDs, or credentials. Preserve this output as the
+   clone evidence. For a large archive, keep both PVCs on the same cluster; do
+   not copy the database between machines.
 2. Start an isolated collector against that clone with
    `ARCHIVE_ALLOW_OFFLINE_FULL_SNAPSHOT=true`. This is the only stable
    snapshot configuration switch.

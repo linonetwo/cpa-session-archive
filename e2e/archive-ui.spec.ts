@@ -1,4 +1,5 @@
-const { test, expect } = require("@playwright/test");
+import { statSync, readFileSync } from "node:fs";
+import { expect, test } from "@playwright/test";
 
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
@@ -110,8 +111,8 @@ test("session export exposes a reusable server-streamed JSONL download", async (
   );
   const downloadedPath = await downloaded.path();
   expect(downloadedPath).toBeTruthy();
-  expect(require("node:fs").statSync(downloadedPath).size).toBeGreaterThan(0);
-  expect(require("node:fs").readFileSync(downloadedPath, "utf8")).toContain(
+  expect(statSync(downloadedPath).size).toBeGreaterThan(0);
+  expect(readFileSync(downloadedPath, "utf8")).toContain(
     "END-OF-LONG-TOOL-OUTPUT",
   );
   const link = page.locator("#downloadNotice a");
