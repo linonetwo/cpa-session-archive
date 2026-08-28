@@ -38,7 +38,7 @@ test("repository scripts are TypeScript-only and temporary Forgejo/Harbor paths 
   assert.doesNotMatch(text, /harbor\.k3s\.onetwo\.website|\.forgejo\/workflows/);
 });
 
-test("GitHub CI and v0.8.0 release form one immutable GHCR-only contract", () => {
+test("GitHub CI and v0.8.1 release form one immutable GHCR-only contract", () => {
   const ci = readFileSync(join(repository, ".github/workflows/ci.yml"), "utf8");
   const release = readFileSync(join(repository, ".github/workflows/release.yml"), "utf8");
   const dockerfile = readFileSync(join(repository, "Dockerfile"), "utf8");
@@ -47,9 +47,9 @@ test("GitHub CI and v0.8.0 release form one immutable GHCR-only contract", () =>
   assert.match(ci, /pnpm typecheck/);
   assert.match(ci, /pnpm test:scripts/);
   assert.match(ci, /go test -count=1 -race \.\/\.\.\./);
-  assert.match(release, /tags: \["v0\.8\.0"\]/);
+  assert.match(release, /tags: \["v0\.8\.1"\]/);
   assert.doesNotMatch(release, /workflow_dispatch|harbor|forgejo/i);
-  assert.doesNotMatch(release, /tags:\s*[^\n]*(?::latest|:main|:v0\.8\.0)/i);
+  assert.doesNotMatch(release, /tags:\s*[^\n]*(?::latest|:main|:v0\.8\.1)/i);
   assert.match(release, /tags: \$\{\{ env\.IMAGE \}\}:\$\{\{ github\.sha \}\}/);
   assert.match(release, /steps\.build\.outputs\.digest/);
   assert.match(release, /release-manifest\.json/);
@@ -57,6 +57,7 @@ test("GitHub CI and v0.8.0 release form one immutable GHCR-only contract", () =>
   assert.match(release, /cpa-session-archive-backup-linux-amd64/);
   assert.match(release, /verify_buildkit_attestations\.ts/);
   assert.match(dockerfile, /ARG GO_IMAGE=[^\n]+@sha256:[0-9a-f]{64}/);
+  assert.match(dockerfile, /ARG GO_IMAGE=golang:1\.26\.7-bookworm@sha256:/);
   assert.match(dockerfile, /ARG RUNTIME_IMAGE=[^\n]+@sha256:[0-9a-f]{64}/);
   assert.doesNotMatch(dockerfile, /^RUN go test /m);
   const uses = [...`${ci}\n${release}`.matchAll(/^\s*- uses: ([^\s]+)(?:\s+#.*)?$/gm)].map(
