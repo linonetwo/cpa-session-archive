@@ -21,6 +21,7 @@ import (
 type server struct {
 	s                   *archive.Store
 	q                   chan archive.Record
+	startupReady        <-chan struct{}
 	ticketMu            sync.Mutex
 	tickets             map[string]exportTicket
 	turnTextMu          sync.Mutex
@@ -49,10 +50,10 @@ func main() {
 	if e != nil {
 		log.Fatal(e)
 	}
-	if env("ARCHIVE_MIGRATE_LEGACY", "false") == "true" {
-		go st.MigrateLegacy()
-	}
-	go func() {
+	repairChain := func() {
+		if env("ARCHIVE_MIGRATE_LEGACY", "false") == "true" {
+			st.MigrateLegacy()
+		}
 		if env("ARCHIVE_REPAIR_CANONICAL_SESSIONS", "true") == "true" {
 			for {
 				if changed, err := st.RepairCanonicalSessions(context.Background()); err != nil {
@@ -105,31 +106,28 @@ func main() {
 				break
 			}
 		}
-	}()
-	if env("ARCHIVE_BACKFILL_TURN_PROJECTION", "true") == "true" {
-		go func() {
-			time.Sleep(2 * time.Second)
-			for {
-				if err := st.BackfillTurnProjection(context.Background(), 64, 25*time.Millisecond); err != nil {
-					log.Printf("turn projection backfill will retry: %v", err)
-					time.Sleep(5 * time.Second)
-					continue
-				}
-				log.Printf("turn projection backfill complete")
-				if err := st.BackfillTurnFacetProjection(context.Background(), 64, 10*time.Millisecond); err != nil {
-					log.Printf("turn facet projection backfill will retry: %v", err)
-					time.Sleep(5 * time.Second)
-					continue
-				}
-				log.Printf("turn facet projection backfill complete")
-				break
-			}
-		}()
 	}
-	s := &server{s: st, q: make(chan archive.Record, 4096), tickets: map[string]exportTicket{}, turnTextJobs: map[string]bool{}}
+	var turnBackfills func()
+	if env("ARCHIVE_BACKFILL_TURN_PROJECTION", "true") == "true" {
+		turnBackfills = func() {
+			time.Sleep(2 * time.Second)
+			for err := st.BackfillTurnProjection(context.Background(), 64, 25*time.Millisecond); err != nil; err = st.BackfillTurnProjection(context.Background(), 64, 25*time.Millisecond) {
+				log.Printf("turn projection backfill will retry: %v", err)
+				time.Sleep(5 * time.Second)
+			}
+			log.Printf("turn projection backfill complete")
+			for err := st.BackfillTurnFacetProjection(context.Background(), 64, 10*time.Millisecond); err != nil; err = st.BackfillTurnFacetProjection(context.Background(), 64, 10*time.Millisecond) {
+				log.Printf("turn facet projection backfill will retry: %v", err)
+				time.Sleep(5 * time.Second)
+			}
+			log.Printf("turn facet projection backfill complete")
+		}
+	}
+	s := &server{s: st, q: make(chan archive.Record, 4096), startupReady: startStartupTasks(repairChain, turnBackfills), tickets: map[string]exportTicket{}, turnTextJobs: map[string]bool{}}
 	go s.writer()
 	go s.digestRefresher()
 	http.HandleFunc("/healthz", s.health)
+	http.HandleFunc("/readyz", s.ready)
 	http.HandleFunc("/ingest", s.ingest)
 	http.HandleFunc("/v1/stats", s.stats)
 	http.HandleFunc("/v1/facets", s.facets)
@@ -148,6 +146,27 @@ func main() {
 	log.Printf("archive collector v%s listening on %s, db=%s, store_upstream=%v", archive.Version, addr, dbPath, storeUpstream)
 	log.Fatal(http.ListenAndServe(addr, nil))
 }
+
+func startStartupTasks(tasks ...func()) <-chan struct{} {
+	ready := make(chan struct{})
+	var pending sync.WaitGroup
+	for _, task := range tasks {
+		if task == nil {
+			continue
+		}
+		pending.Add(1)
+		go func(run func()) {
+			defer pending.Done()
+			run()
+		}(task)
+	}
+	go func() {
+		pending.Wait()
+		close(ready)
+	}()
+	return ready
+}
+
 func (s *server) identityMappings(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
@@ -186,10 +205,24 @@ func env(k, d string) string {
 }
 func (s *server) health(w http.ResponseWriter, r *http.Request) {
 	if e := s.s.DB.PingContext(r.Context()); e != nil {
-		http.Error(w, e.Error(), 503)
+		http.Error(w, "unhealthy", http.StatusServiceUnavailable)
 		return
 	}
-	w.Write([]byte("ok"))
+	_, _ = w.Write([]byte("ok"))
+}
+
+func (s *server) ready(w http.ResponseWriter, r *http.Request) {
+	select {
+	case <-s.startupReady:
+	default:
+		http.Error(w, "not ready", http.StatusServiceUnavailable)
+		return
+	}
+	if _, err := s.s.Stats(r.Context()); err != nil {
+		http.Error(w, "not ready", http.StatusServiceUnavailable)
+		return
+	}
+	_, _ = w.Write([]byte("ok"))
 }
 func (s *server) ingest(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {

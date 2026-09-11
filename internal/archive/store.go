@@ -780,13 +780,19 @@ func (s *Store) Stats(ctx context.Context) (Stats, error) {
 	// Read counts from the narrow projections maintained in the ingest
 	// transaction. Scanning the payload-heavy records table is needlessly slow
 	// on network-backed volumes after an attach or replica rebuild.
-	_ = s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM session_indexed_requests`).Scan(&x.Records)
-	_ = s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM session_summaries`).Scan(&x.Sessions)
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM session_indexed_requests`).Scan(&x.Records); err != nil {
+		return x, err
+	}
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM session_summaries`).Scan(&x.Sessions); err != nil {
+		return x, err
+	}
 	// blobs stores large payload chunks inline. COUNT(*) walks payload pages on
 	// SQLite and becomes painfully slow on a degraded network volume. rowid is
 	// monotonically allocated, so MAX(rowid) is an O(log n) operational
 	// estimate; exact blob cardinality is not user-facing archive information.
-	_ = s.DB.QueryRowContext(ctx, `SELECT COALESCE(MAX(rowid),0) FROM blobs`).Scan(&x.Blobs)
+	if err := s.DB.QueryRowContext(ctx, `SELECT COALESCE(MAX(rowid),0) FROM blobs`).Scan(&x.Blobs); err != nil {
+		return x, err
+	}
 	// Report the storage a user can act on. SUM(LENGTH(data)) scans every large
 	// blob and can block the management page for minutes while legacy rows are
 	// being migrated. File metadata is O(1) and includes SQLite WAL usage.

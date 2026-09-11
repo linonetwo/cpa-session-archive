@@ -80,6 +80,7 @@ ARCHIVE_DB=/data/archive.sqlite STORE_UPSTREAM_REQUEST=false cpa-session-collect
 Endpoints:
 
 - GET /healthz
+- GET /readyz
 - GET /v1/stats
 - GET /v1/facets
 - GET /v1/identity-mappings
