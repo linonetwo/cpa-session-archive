@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -28,6 +29,8 @@ func TestReadinessWaitsForRepairsAndTurnBackfills(t *testing.T) {
 	projectionDone := make(chan struct{})
 	facetStarted := make(chan struct{})
 	facetDone := make(chan struct{})
+	var startupPhase atomic.Int32
+	var orderViolation atomic.Bool
 	releaseRepair := releaseGate(repairDone)
 	releaseProjection := releaseGate(projectionDone)
 	releaseFacet := releaseGate(facetDone)
@@ -36,39 +39,58 @@ func TestReadinessWaitsForRepairsAndTurnBackfills(t *testing.T) {
 	defer releaseFacet()
 	startupReady := startStartupTasks(
 		startupTask{name: "repair chain", run: func() error {
+			if !startupPhase.CompareAndSwap(0, 1) {
+				orderViolation.Store(true)
+			}
 			close(repairStarted)
 			<-repairDone
+			startupPhase.Store(2)
 			return nil
 		}},
 		startupTask{name: "turn projection", run: func() error {
+			if !startupPhase.CompareAndSwap(2, 3) {
+				orderViolation.Store(true)
+			}
 			close(projectionStarted)
 			<-projectionDone
+			startupPhase.Store(4)
 			return nil
 		}},
 		startupTask{name: "turn facet projection", run: func() error {
+			if !startupPhase.CompareAndSwap(4, 5) {
+				orderViolation.Store(true)
+			}
 			close(facetStarted)
 			<-facetDone
+			startupPhase.Store(6)
 			return nil
 		}},
 	)
 	server := &server{s: store, startupReady: startupReady}
 
 	<-repairStarted
-	assertNotSignaled(t, projectionStarted, "turn projection started before repair chain completed")
 	assertProbeStatus(t, server.health, http.StatusOK)
 	assertProbeStatus(t, server.ready, http.StatusServiceUnavailable)
 
 	releaseRepair()
 	<-projectionStarted
-	assertNotSignaled(t, facetStarted, "turn facet projection started before turn projection completed")
+	if orderViolation.Load() {
+		t.Fatal("turn projection entered before repair chain completed")
+	}
 	assertProbeStatus(t, server.ready, http.StatusServiceUnavailable)
 
 	releaseProjection()
 	<-facetStarted
+	if orderViolation.Load() {
+		t.Fatal("turn facet projection entered before turn projection completed")
+	}
 	assertProbeStatus(t, server.ready, http.StatusServiceUnavailable)
 
 	releaseFacet()
 	<-startupReady
+	if orderViolation.Load() || startupPhase.Load() != 6 {
+		t.Fatalf("startup tasks completed out of order: phase=%d violation=%v", startupPhase.Load(), orderViolation.Load())
+	}
 	assertProbeStatus(t, server.ready, http.StatusOK)
 
 	cancelled, cancel := context.WithCancel(context.Background())
