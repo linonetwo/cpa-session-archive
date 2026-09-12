@@ -1,22 +1,21 @@
-# v0.8.1 release contract
+# v0.8.2 release contract
 
 GitHub is the only source and release system, and GHCR is the only container
 registry. The code repository remains canonical at
 `linonetwo/cpa-session-archive`.
 
-`v0.8.1` supersedes the unpublished `v0.8.0` candidate. The earlier immutable
-tag remains preserved for audit, but its release workflow correctly stopped
-after Trivy found 19 high-severity vulnerabilities in the unsupported Go
-1.24.13 standard library. This patch candidate builds with Go 1.26.7 and does
-not move or reuse the protected `v0.8.0` tag.
+`v0.8.2` succeeds the published, immutable `v0.8.1` release. This patch holds
+collector readiness closed until startup repair and projection work completes,
+while preserving `/healthz` as process and database liveness. It does not move
+or reuse either protected earlier tag.
 
 ## Identity and gates
 
-The release workflow accepts only `refs/tags/v0.8.1`. It verifies all of the
+The release workflow accepts only `refs/tags/v0.8.2`. It verifies all of the
 following before any publication job starts:
 
 - the tag checkout and `GITHUB_SHA` are the same complete 40-character commit;
-- `internal/archive/version.go` declares `0.8.1`;
+- `internal/archive/version.go` declares `0.8.2`;
 - the commit is reachable from `origin/main`;
 - the exact commit has a completed, successful `ci` workflow run caused by a
   push to `main`.
@@ -29,7 +28,7 @@ proof is absent or ambiguous, the release fails closed.
 Both Docker build stages pin their upstream images by full registry digest.
 The container build compiles the already-tested exact SHA and does not repeat
 the Go suite inside BuildKit. The builder is pinned to Go 1.26.7, which
-includes all security fixes required by the v0.8.0 Trivy finding.
+includes all security fixes required by the earlier Trivy finding.
 
 Before creating the tag, administrators must protect `main` and `v*` refs
 against force updates and deletion, and enable immutable GitHub Releases. The
