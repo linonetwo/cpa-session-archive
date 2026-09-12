@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -34,25 +35,34 @@ func TestReadinessWaitsForRepairsAndTurnBackfills(t *testing.T) {
 	defer releaseProjection()
 	defer releaseFacet()
 	startupReady := startStartupTasks(
-		func() {
+		startupTask{name: "repair chain", run: func() error {
 			close(repairStarted)
 			<-repairDone
-		},
-		func() {
+			return nil
+		}},
+		startupTask{name: "turn projection", run: func() error {
 			close(projectionStarted)
 			<-projectionDone
+			return nil
+		}},
+		startupTask{name: "turn facet projection", run: func() error {
 			close(facetStarted)
 			<-facetDone
-		},
+			return nil
+		}},
 	)
 	server := &server{s: store, startupReady: startupReady}
 
 	<-repairStarted
-	<-projectionStarted
+	assertNotSignaled(t, projectionStarted, "turn projection started before repair chain completed")
 	assertProbeStatus(t, server.health, http.StatusOK)
 	assertProbeStatus(t, server.ready, http.StatusServiceUnavailable)
 
 	releaseRepair()
+	<-projectionStarted
+	assertNotSignaled(t, facetStarted, "turn facet projection started before turn projection completed")
+	assertProbeStatus(t, server.ready, http.StatusServiceUnavailable)
+
 	releaseProjection()
 	<-facetStarted
 	assertProbeStatus(t, server.ready, http.StatusServiceUnavailable)
@@ -71,10 +81,114 @@ func TestReadinessWaitsForRepairsAndTurnBackfills(t *testing.T) {
 	}
 }
 
+func TestFailedStartupUsesBoundedRetriesAndNeverBecomesReady(t *testing.T) {
+	attempts := 0
+	taskFinished := make(chan struct{})
+	ready := startStartupTasks(startupTask{name: "failing repair", run: func() error {
+		defer close(taskFinished)
+		return retryStartupWithPolicy(context.Background(), "failing repair", 3, 0, func(context.Context) error {
+			attempts++
+			return errors.New("forced failure")
+		})
+	}})
+	<-taskFinished
+	if attempts != 3 {
+		t.Fatalf("attempts=%d, want 3", attempts)
+	}
+	assertNotSignaled(t, ready, "failed startup became ready")
+}
+
+func TestHealthFailureIsGeneric(t *testing.T) {
+	store, err := archive.OpenStore(filepath.Join(t.TempDir(), "archive.sqlite"), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = store.DB.Close(); err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	(&server{s: store}).health(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if response.Code != http.StatusServiceUnavailable || strings.TrimSpace(response.Body.String()) != "unhealthy" {
+		t.Fatalf("status=%d body=%q", response.Code, response.Body.String())
+	}
+}
+
+func TestPreviewPayloadFailureBlocksReadinessWithoutCompletionMarker(t *testing.T) {
+	cases := []struct {
+		name   string
+		mutate func(*testing.T, *archive.Store, string)
+	}{
+		{name: "missing", mutate: func(t *testing.T, store *archive.Store, ref string) {
+			if _, err := store.DB.Exec(`DELETE FROM blobs WHERE hash=?`, ref); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "corrupt", mutate: func(t *testing.T, store *archive.Store, ref string) {
+			if _, err := store.DB.Exec(`UPDATE blobs SET data=? WHERE hash=?`, []byte("not-a-gzip-stream"), ref); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			store, err := archive.OpenStore(filepath.Join(t.TempDir(), "archive.sqlite"), false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = store.DB.Close() })
+			now := time.Now()
+			requestID := test.name + "-payload"
+			if err = store.PutBatch([]archive.Record{{
+				RequestID: requestID, SessionID: "session", StartedAt: now, CompletedAt: now,
+				OriginalRequest: []byte(`{"input":[{"role":"user","content":"must not be marked complete"}]}`),
+			}}); err != nil {
+				t.Fatal(err)
+			}
+			var originalRef string
+			if err = store.DB.QueryRow(`SELECT original_ref FROM records WHERE request_id=?`, requestID).Scan(&originalRef); err != nil {
+				t.Fatal(err)
+			}
+			test.mutate(t, store, originalRef)
+
+			taskFinished := make(chan struct{})
+			var repairErr error
+			ready := startStartupTasks(startupTask{name: "request preview repair", run: func() error {
+				defer close(taskFinished)
+				repairErr = retryStartupWithPolicy(context.Background(), "request preview repair", 1, 0, store.RepairRecordPreviews)
+				return repairErr
+			}})
+			<-taskFinished
+			if repairErr == nil {
+				t.Fatal("invalid payload was accepted")
+			}
+			assertNotSignaled(t, ready, "payload failure became ready")
+			var requestMarkers, repairMarkers int
+			if err = store.DB.QueryRow(`SELECT COUNT(*) FROM previewed_requests WHERE request_id=?`, requestID).Scan(&requestMarkers); err != nil {
+				t.Fatal(err)
+			}
+			if err = store.DB.QueryRow(`SELECT COUNT(*) FROM repair_versions WHERE name='record_preview'`).Scan(&repairMarkers); err != nil {
+				t.Fatal(err)
+			}
+			if requestMarkers != 0 || repairMarkers != 0 {
+				t.Fatalf("request markers=%d repair markers=%d", requestMarkers, repairMarkers)
+			}
+		})
+	}
+}
+
 func releaseGate(gate chan struct{}) func() {
 	var once sync.Once
 	return func() {
 		once.Do(func() { close(gate) })
+	}
+}
+
+func assertNotSignaled(t *testing.T, signal <-chan struct{}, message string) {
+	t.Helper()
+	select {
+	case <-signal:
+		t.Fatal(message)
+	default:
 	}
 }
 

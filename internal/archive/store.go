@@ -182,22 +182,39 @@ func gzipBytes(b []byte) []byte {
 	return out.Bytes()
 }
 func gunzipBytes(b []byte) []byte {
+	v, _ := gunzipBytesChecked(b)
+	return v
+}
+
+func gunzipBytesChecked(b []byte) ([]byte, error) {
 	if len(b) == 0 {
-		return nil
+		return nil, nil
 	}
 	z, e := gzip.NewReader(bytes.NewReader(b))
 	if e != nil {
-		return nil
+		return nil, e
 	}
-	defer z.Close()
-	v, _ := io.ReadAll(z)
-	return v
+	v, readErr := io.ReadAll(z)
+	closeErr := z.Close()
+	if readErr != nil {
+		return nil, readErr
+	}
+	if closeErr != nil {
+		return nil, closeErr
+	}
+	return v, nil
 }
 func putBlob(tx *sql.Tx, b Blob) error {
-	_, e := tx.Exec(`INSERT OR IGNORE INTO blobs(hash,media_type,raw_size,codec,data) VALUES(?,?,?,'gzip',?)`, b.Hash, b.MediaType, b.RawSize, gzipBytes(b.Data))
+	return putBlobContext(context.Background(), tx, b)
+}
+func putBlobContext(ctx context.Context, tx *sql.Tx, b Blob) error {
+	_, e := tx.ExecContext(ctx, `INSERT OR IGNORE INTO blobs(hash,media_type,raw_size,codec,data) VALUES(?,?,?,'gzip',?)`, b.Hash, b.MediaType, b.RawSize, gzipBytes(b.Data))
 	return e
 }
 func putPayload(tx *sql.Tx, raw []byte) (string, error) {
+	return putPayloadContext(context.Background(), tx, raw)
+}
+func putPayloadContext(ctx context.Context, tx *sql.Tx, raw []byte) (string, error) {
 	if len(raw) == 0 {
 		return "", nil
 	}
@@ -206,13 +223,13 @@ func putPayload(tx *sql.Tx, raw []byte) (string, error) {
 		return "", e
 	}
 	for _, b := range blobs {
-		if e = putBlob(tx, b); e != nil {
+		if e = putBlobContext(ctx, tx, b); e != nil {
 			return "", e
 		}
 	}
 	sum := sha256.Sum256(manifest)
 	mb := Blob{Hash: "sha256:" + hex.EncodeToString(sum[:]), RawSize: int64(len(manifest)), MediaType: "application/vnd.cpa.archive-manifest+json", Data: manifest}
-	if e = putBlob(tx, mb); e != nil {
+	if e = putBlobContext(ctx, tx, mb); e != nil {
 		return "", e
 	}
 	return mb.Hash, nil
@@ -306,7 +323,7 @@ func loadBlobWithQuery(ctx context.Context, q queryContext, hash string) ([]byte
 		return nil, e
 	}
 	if codec == "gzip" {
-		return gunzipBytes(data), nil
+		return gunzipBytesChecked(data)
 	}
 	return data, nil
 }
@@ -807,11 +824,11 @@ func fileSize(path string) int64 {
 	}
 	return info.Size()
 }
-func (s *Store) MigrateLegacy() {
+func (s *Store) MigrateLegacy(ctx context.Context) error {
 	for {
-		rows, e := s.DB.Query(`SELECT request_id,original_request_gz,upstream_request_gz,response_gz FROM records WHERE (original_ref IS NULL OR original_ref='') AND (original_request_gz IS NOT NULL OR response_gz IS NOT NULL) LIMIT 8`)
+		rows, e := s.DB.QueryContext(ctx, `SELECT request_id,original_request_gz,upstream_request_gz,response_gz FROM records WHERE (original_ref IS NULL OR original_ref='') AND (original_request_gz IS NOT NULL OR response_gz IS NOT NULL) LIMIT 8`)
 		if e != nil {
-			return
+			return e
 		}
 		type old struct {
 			id      string
@@ -820,44 +837,64 @@ func (s *Store) MigrateLegacy() {
 		var batch []old
 		for rows.Next() {
 			var x old
-			if rows.Scan(&x.id, &x.o, &x.u, &x.r) == nil {
-				batch = append(batch, x)
+			if e = rows.Scan(&x.id, &x.o, &x.u, &x.r); e != nil {
+				rows.Close()
+				return e
 			}
+			batch = append(batch, x)
 		}
-		rows.Close()
+		if e = rows.Err(); e != nil {
+			rows.Close()
+			return e
+		}
+		if e = rows.Close(); e != nil {
+			return e
+		}
 		if len(batch) == 0 {
-			return
+			return nil
 		}
-		tx, e := s.DB.Begin()
+		tx, e := s.DB.BeginTx(ctx, nil)
 		if e != nil {
-			return
+			return e
 		}
-		for _, x := range batch {
-			or, e := putPayload(tx, gunzipBytes(x.o))
-			if e != nil {
-				_ = tx.Rollback()
-				return
-			}
-			ur := ""
-			if s.StoreUpstream {
-				ur, e = putPayload(tx, gunzipBytes(x.u))
-				if e != nil {
-					_ = tx.Rollback()
-					return
+		migrateErr := func() error {
+			defer tx.Rollback()
+			for _, x := range batch {
+				original, decodeErr := gunzipBytesChecked(x.o)
+				if decodeErr != nil {
+					return decodeErr
+				}
+				or, writeErr := putPayloadContext(ctx, tx, original)
+				if writeErr != nil {
+					return writeErr
+				}
+				ur := ""
+				if s.StoreUpstream {
+					upstream, decodeErr := gunzipBytesChecked(x.u)
+					if decodeErr != nil {
+						return decodeErr
+					}
+					ur, writeErr = putPayloadContext(ctx, tx, upstream)
+					if writeErr != nil {
+						return writeErr
+					}
+				}
+				response, decodeErr := gunzipBytesChecked(x.r)
+				if decodeErr != nil {
+					return decodeErr
+				}
+				rr, writeErr := putPayloadContext(ctx, tx, response)
+				if writeErr != nil {
+					return writeErr
+				}
+				if _, writeErr = tx.ExecContext(ctx, `UPDATE records SET original_ref=?,upstream_ref=?,response_ref=?,original_request_gz=NULL,upstream_request_gz=NULL,response_gz=NULL WHERE request_id=?`, or, ur, rr, x.id); writeErr != nil {
+					return writeErr
 				}
 			}
-			rr, e := putPayload(tx, gunzipBytes(x.r))
-			if e != nil {
-				_ = tx.Rollback()
-				return
-			}
-			if _, e = tx.Exec(`UPDATE records SET original_ref=?,upstream_ref=?,response_ref=?,original_request_gz=NULL,upstream_request_gz=NULL,response_gz=NULL WHERE request_id=?`, or, ur, rr, x.id); e != nil {
-				_ = tx.Rollback()
-				return
-			}
-		}
-		if e = tx.Commit(); e != nil {
-			return
+			return tx.Commit()
+		}()
+		if migrateErr != nil {
+			return migrateErr
 		}
 		log.Printf("migrated %d legacy archive records to CAS", len(batch))
 	}

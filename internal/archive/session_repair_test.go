@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"path/filepath"
 	"testing"
@@ -214,5 +215,41 @@ func TestRepairRecordPreviewsBackfillsThreadSource(t *testing.T) {
 	sessions, err := store.SessionsFiltered(context.Background(), 10, map[string]string{"thread.source": "system"})
 	if err != nil || len(sessions) != 1 || len(sessions[0].ThreadSources) != 1 || sessions[0].ThreadSources[0] != "system" {
 		t.Fatalf("sessions=%+v err=%v", sessions, err)
+	}
+}
+
+func TestMigrateLegacyReturnsCorruptPayloadErrorWithoutMutation(t *testing.T) {
+	store, err := OpenStore(filepath.Join(t.TempDir(), "archive.sqlite"), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.DB.Close()
+	now := time.Now()
+	if err = store.PutBatch([]Record{{
+		RequestID: "corrupt-legacy", SessionID: "session", StartedAt: now, CompletedAt: now,
+		OriginalRequest: []byte(`{"input":"valid before corruption"}`),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	corrupt := []byte("not-a-gzip-stream")
+	if _, err = store.DB.Exec(`UPDATE records SET original_ref='',original_request_gz=? WHERE request_id='corrupt-legacy'`, corrupt); err != nil {
+		t.Fatal(err)
+	}
+
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err = store.MigrateLegacy(cancelled); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled migration error=%v", err)
+	}
+	if err = store.MigrateLegacy(context.Background()); err == nil {
+		t.Fatal("corrupt legacy gzip was accepted")
+	}
+	var originalRef string
+	var legacy []byte
+	if err = store.DB.QueryRow(`SELECT COALESCE(original_ref,''),original_request_gz FROM records WHERE request_id='corrupt-legacy'`).Scan(&originalRef, &legacy); err != nil {
+		t.Fatal(err)
+	}
+	if originalRef != "" || !bytes.Equal(legacy, corrupt) {
+		t.Fatalf("failed migration mutated record: original_ref=%q legacy=%q", originalRef, legacy)
 	}
 }

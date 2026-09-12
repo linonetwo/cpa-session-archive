@@ -2,6 +2,7 @@ package archive
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"time"
 )
@@ -14,7 +15,9 @@ type canonicalRepair struct{ requestID, oldID, newID, facets string }
 func (s *Store) RepairCanonicalSessions(ctx context.Context) (int, error) {
 	const repairVersion = 1
 	var version int
-	_ = s.DB.QueryRowContext(ctx, `SELECT version FROM repair_versions WHERE name='canonical_session'`).Scan(&version)
+	if err := s.DB.QueryRowContext(ctx, `SELECT version FROM repair_versions WHERE name='canonical_session'`).Scan(&version); err != nil && err != sql.ErrNoRows {
+		return 0, err
+	}
 	if version >= repairVersion {
 		return 0, nil
 	}
