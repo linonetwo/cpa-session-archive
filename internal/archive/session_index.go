@@ -202,7 +202,9 @@ func (s *Store) NormalizeHistoricalSSE(ctx context.Context) error {
 // extractors with the last meaningful user message from the first request.
 func (s *Store) RepairSessionSummaries(ctx context.Context) error {
 	var version int
-	_ = s.DB.QueryRowContext(ctx, `SELECT version FROM repair_versions WHERE name='session_summary'`).Scan(&version)
+	if err := s.DB.QueryRowContext(ctx, `SELECT version FROM repair_versions WHERE name='session_summary'`).Scan(&version); err != nil && err != sql.ErrNoRows {
+		return err
+	}
 	where := ` WHERE s.summary='' OR lower(s.summary) LIKE '<environment_%' OR lower(s.summary) LIKE '<workspace_info>%' OR lower(s.summary) LIKE '<in-app-browser-context%' OR lower(s.summary) LIKE '<app-context>%' OR lower(s.summary) LIKE '<context>%' OR lower(s.summary) LIKE '&lt;context&gt;%' OR lower(s.summary) LIKE '# files mentioned by the user:%'`
 	if version < 3 {
 		where = ""
@@ -242,7 +244,9 @@ func (s *Store) RepairSessionSummaries(ctx context.Context) error {
 		}
 		repaired++
 	}
-	_, _ = s.DB.ExecContext(ctx, `INSERT INTO repair_versions(name,version) VALUES('session_summary',3) ON CONFLICT(name) DO UPDATE SET version=excluded.version`)
+	if _, err = s.DB.ExecContext(ctx, `INSERT INTO repair_versions(name,version) VALUES('session_summary',3) ON CONFLICT(name) DO UPDATE SET version=excluded.version`); err != nil {
+		return err
+	}
 	log.Printf("session summary repair complete: %d/%d updated", repaired, len(candidates))
 	return nil
 }
@@ -284,15 +288,21 @@ func (s *Store) RepairRecordPreviews(ctx context.Context) error {
 		for _, item := range candidates[offset:end] {
 			var summary, responsePreview, threadSource string
 			if item.originalRef != "" {
-				if body, loadErr := s.LoadPayload(item.originalRef); loadErr == nil {
-					summary = extractConversationSummary(body)
-					threadSource = extractThreadSource(body)
+				body, loadErr := loadPayloadWithQuery(ctx, tx, item.originalRef)
+				if loadErr != nil {
+					tx.Rollback()
+					return loadErr
 				}
+				summary = extractConversationSummary(body)
+				threadSource = extractThreadSource(body)
 			}
 			if item.responseRef != "" {
-				if body, loadErr := s.LoadPayload(item.responseRef); loadErr == nil {
-					responsePreview = extractResponsePreview(body)
+				body, loadErr := loadPayloadWithQuery(ctx, tx, item.responseRef)
+				if loadErr != nil {
+					tx.Rollback()
+					return loadErr
 				}
+				responsePreview = extractResponsePreview(body)
 			}
 			facets := map[string][]string{}
 			_ = json.Unmarshal([]byte(item.facets), &facets)
@@ -333,8 +343,8 @@ func (s *Store) RepairRecordPreviews(ctx context.Context) error {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	_, _ = s.DB.ExecContext(ctx, `INSERT INTO repair_versions(name,version) VALUES('record_preview',?) ON CONFLICT(name) DO UPDATE SET version=excluded.version`, previewVersion)
-	return nil
+	_, err = s.DB.ExecContext(ctx, `INSERT INTO repair_versions(name,version) VALUES('record_preview',?) ON CONFLICT(name) DO UPDATE SET version=excluded.version`, previewVersion)
+	return err
 }
 
 func loadBlobTx(tx *sql.Tx, hash string) ([]byte, error) {
@@ -344,7 +354,7 @@ func loadBlobTx(tx *sql.Tx, hash string) ([]byte, error) {
 		return nil, err
 	}
 	if codec == "gzip" {
-		return gunzipBytes(data), nil
+		return gunzipBytesChecked(data)
 	}
 	return data, nil
 }

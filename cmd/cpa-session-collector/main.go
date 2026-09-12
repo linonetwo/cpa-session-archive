@@ -21,6 +21,7 @@ import (
 type server struct {
 	s                   *archive.Store
 	q                   chan archive.Record
+	startupReady        <-chan struct{}
 	ticketMu            sync.Mutex
 	tickets             map[string]exportTicket
 	turnTextMu          sync.Mutex
@@ -42,6 +43,16 @@ type exportTicket struct {
 	CursorProtocol string
 }
 
+type startupTask struct {
+	name string
+	run  func() error
+}
+
+const (
+	startupMaxAttempts = 3
+	startupRetryDelay  = 5 * time.Second
+)
+
 func main() {
 	dbPath := env("ARCHIVE_DB", "/data/archive.sqlite")
 	storeUpstream := env("STORE_UPSTREAM_REQUEST", "false") == "true"
@@ -49,87 +60,79 @@ func main() {
 	if e != nil {
 		log.Fatal(e)
 	}
-	if env("ARCHIVE_MIGRATE_LEGACY", "false") == "true" {
-		go st.MigrateLegacy()
-	}
-	go func() {
+	startupContext := context.Background()
+	repairChain := func() error {
+		if env("ARCHIVE_MIGRATE_LEGACY", "false") == "true" {
+			if err := retryStartup(startupContext, "legacy archive migration", func(ctx context.Context) error {
+				return st.MigrateLegacy(ctx)
+			}); err != nil {
+				return err
+			}
+		}
 		if env("ARCHIVE_REPAIR_CANONICAL_SESSIONS", "true") == "true" {
-			for {
-				if changed, err := st.RepairCanonicalSessions(context.Background()); err != nil {
-					log.Printf("canonical session repair will retry: %v", err)
-					time.Sleep(5 * time.Second)
-					continue
-				} else if changed > 0 {
-					log.Printf("canonical session repair merged %d request records", changed)
-				}
-				break
+			var changed int
+			if err := retryStartup(startupContext, "canonical session repair", func(ctx context.Context) (err error) {
+				changed, err = st.RepairCanonicalSessions(ctx)
+				return err
+			}); err != nil {
+				return err
+			}
+			if changed > 0 {
+				log.Printf("canonical session repair merged %d request records", changed)
 			}
 		}
 		if env("ARCHIVE_BACKFILL_SESSION_INDEX", "true") == "true" {
-			for {
-				if err := st.BackfillSessionIndex(context.Background()); err != nil {
-					log.Printf("session index backfill will retry: %v", err)
-					time.Sleep(5 * time.Second)
-					continue
-				}
-				break
+			if err := retryStartup(startupContext, "session index backfill", st.BackfillSessionIndex); err != nil {
+				return err
 			}
 		}
 		if env("ARCHIVE_REPAIR_SESSION_SUMMARIES", "true") == "true" {
-			for {
-				if err := st.RepairSessionSummaries(context.Background()); err != nil {
-					log.Printf("session summary repair will retry: %v", err)
-					time.Sleep(5 * time.Second)
-					continue
-				}
-				break
+			if err := retryStartup(startupContext, "session summary repair", st.RepairSessionSummaries); err != nil {
+				return err
 			}
 		}
 		if env("ARCHIVE_REPAIR_RECORD_PREVIEWS", "true") == "true" {
-			for {
-				if err := st.RepairRecordPreviews(context.Background()); err != nil {
-					log.Printf("request preview repair will retry: %v", err)
-					time.Sleep(5 * time.Second)
-					continue
-				}
-				break
+			if err := retryStartup(startupContext, "request preview repair", st.RepairRecordPreviews); err != nil {
+				return err
 			}
 		}
 		if env("ARCHIVE_NORMALIZE_SSE", "true") == "true" {
-			for {
-				if err := st.NormalizeHistoricalSSE(context.Background()); err != nil {
-					log.Printf("historical SSE normalization will retry: %v", err)
-					time.Sleep(5 * time.Second)
-					continue
-				}
-				break
+			if err := retryStartup(startupContext, "historical SSE normalization", st.NormalizeHistoricalSSE); err != nil {
+				return err
 			}
 		}
-	}()
-	if env("ARCHIVE_BACKFILL_TURN_PROJECTION", "true") == "true" {
-		go func() {
-			time.Sleep(2 * time.Second)
-			for {
-				if err := st.BackfillTurnProjection(context.Background(), 64, 25*time.Millisecond); err != nil {
-					log.Printf("turn projection backfill will retry: %v", err)
-					time.Sleep(5 * time.Second)
-					continue
-				}
-				log.Printf("turn projection backfill complete")
-				if err := st.BackfillTurnFacetProjection(context.Background(), 64, 10*time.Millisecond); err != nil {
-					log.Printf("turn facet projection backfill will retry: %v", err)
-					time.Sleep(5 * time.Second)
-					continue
-				}
-				log.Printf("turn facet projection backfill complete")
-				break
-			}
-		}()
+		return nil
 	}
-	s := &server{s: st, q: make(chan archive.Record, 4096), tickets: map[string]exportTicket{}, turnTextJobs: map[string]bool{}}
+	var turnProjection, turnFacets func() error
+	if env("ARCHIVE_BACKFILL_TURN_PROJECTION", "true") == "true" {
+		turnProjection = func() error {
+			if err := retryStartup(startupContext, "turn projection backfill", func(ctx context.Context) error {
+				return st.BackfillTurnProjection(ctx, 64, 25*time.Millisecond)
+			}); err != nil {
+				return err
+			}
+			log.Printf("turn projection backfill complete")
+			return nil
+		}
+		turnFacets = func() error {
+			if err := retryStartup(startupContext, "turn facet projection backfill", func(ctx context.Context) error {
+				return st.BackfillTurnFacetProjection(ctx, 64, 10*time.Millisecond)
+			}); err != nil {
+				return err
+			}
+			log.Printf("turn facet projection backfill complete")
+			return nil
+		}
+	}
+	s := &server{s: st, q: make(chan archive.Record, 4096), startupReady: startStartupTasks(
+		startupTask{name: "repair chain", run: repairChain},
+		startupTask{name: "turn projection", run: turnProjection},
+		startupTask{name: "turn facet projection", run: turnFacets},
+	), tickets: map[string]exportTicket{}, turnTextJobs: map[string]bool{}}
 	go s.writer()
 	go s.digestRefresher()
 	http.HandleFunc("/healthz", s.health)
+	http.HandleFunc("/readyz", s.ready)
 	http.HandleFunc("/ingest", s.ingest)
 	http.HandleFunc("/v1/stats", s.stats)
 	http.HandleFunc("/v1/facets", s.facets)
@@ -148,6 +151,60 @@ func main() {
 	log.Printf("archive collector v%s listening on %s, db=%s, store_upstream=%v", archive.Version, addr, dbPath, storeUpstream)
 	log.Fatal(http.ListenAndServe(addr, nil))
 }
+
+func startStartupTasks(tasks ...startupTask) <-chan struct{} {
+	ready := make(chan struct{})
+	go func() {
+		for _, task := range tasks {
+			if task.run == nil {
+				continue
+			}
+			if err := task.run(); err != nil {
+				log.Printf("collector startup stopped at %s; readiness remains false: %v", task.name, err)
+				return
+			}
+		}
+		close(ready)
+	}()
+	return ready
+}
+
+func retryStartup(ctx context.Context, name string, run func(context.Context) error) error {
+	return retryStartupWithPolicy(ctx, name, startupMaxAttempts, startupRetryDelay, run)
+}
+
+func retryStartupWithPolicy(ctx context.Context, name string, attempts int, delay time.Duration, run func(context.Context) error) error {
+	if attempts < 1 {
+		attempts = 1
+	}
+	var err error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		if err = ctx.Err(); err != nil {
+			return err
+		}
+		if err = run(ctx); err == nil {
+			return nil
+		}
+		if attempt == attempts {
+			break
+		}
+		log.Printf("%s attempt %d/%d failed; will retry: %v", name, attempt, attempts, err)
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return err
+}
+
 func (s *server) identityMappings(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
@@ -186,10 +243,24 @@ func env(k, d string) string {
 }
 func (s *server) health(w http.ResponseWriter, r *http.Request) {
 	if e := s.s.DB.PingContext(r.Context()); e != nil {
-		http.Error(w, e.Error(), 503)
+		http.Error(w, "unhealthy", http.StatusServiceUnavailable)
 		return
 	}
-	w.Write([]byte("ok"))
+	_, _ = w.Write([]byte("ok"))
+}
+
+func (s *server) ready(w http.ResponseWriter, r *http.Request) {
+	select {
+	case <-s.startupReady:
+	default:
+		http.Error(w, "not ready", http.StatusServiceUnavailable)
+		return
+	}
+	if _, err := s.s.Stats(r.Context()); err != nil {
+		http.Error(w, "not ready", http.StatusServiceUnavailable)
+		return
+	}
+	_, _ = w.Write([]byte("ok"))
 }
 func (s *server) ingest(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
