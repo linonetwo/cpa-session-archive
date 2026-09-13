@@ -794,10 +794,11 @@ func decodedPayload(raw []byte) any {
 }
 func (s *Store) Stats(ctx context.Context) (Stats, error) {
 	var x Stats
-	// Read counts from the narrow projections maintained in the ingest
-	// transaction. Scanning the payload-heavy records table is needlessly slow
-	// on network-backed volumes after an attach or replica rebuild.
-	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM session_indexed_requests`).Scan(&x.Records); err != nil {
+	// `session_summaries.requests` is incremented only after the unique request
+	// projection accepts the request, in the same ingest transaction. Summing
+	// the much smaller per-session projection therefore preserves the exact
+	// record count without walking every request-index entry on a remote volume.
+	if err := s.DB.QueryRowContext(ctx, `SELECT COALESCE(SUM(requests),0) FROM session_summaries`).Scan(&x.Records); err != nil {
 		return x, err
 	}
 	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM session_summaries`).Scan(&x.Sessions); err != nil {
