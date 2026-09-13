@@ -46,6 +46,36 @@ func TestFacetIndexAndFiltering(t *testing.T) {
 	}
 }
 
+func TestStatsRecordsMatchesRequestIndexAfterCanonicalSessionRepair(t *testing.T) {
+	s, err := OpenStore(filepath.Join(t.TempDir(), "archive.sqlite"), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.DB.Close()
+	now := time.Now()
+	if err = s.PutBatch([]Record{
+		{RequestID: "one", SessionID: "legacy-one", StartedAt: now, CompletedAt: now, Facets: map[string][]string{"thread.id": {"canonical"}}},
+		{RequestID: "two", SessionID: "legacy-two", StartedAt: now.Add(time.Second), CompletedAt: now.Add(time.Second), Facets: map[string][]string{"thread.id": {"canonical"}}},
+		{RequestID: "three", SessionID: "separate", StartedAt: now.Add(2 * time.Second), CompletedAt: now.Add(2 * time.Second)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.RepairCanonicalSessions(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	stats, err := s.Stats(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var indexed int64
+	if err = s.DB.QueryRow(`SELECT COUNT(*) FROM session_indexed_requests`).Scan(&indexed); err != nil {
+		t.Fatal(err)
+	}
+	if stats.Records != indexed || stats.Records != 3 || stats.Sessions != 2 {
+		t.Fatalf("stats=%+v indexed=%d", stats, indexed)
+	}
+}
+
 func TestRequestContextIncludesFollowingToolResult(t *testing.T) {
 	s, err := OpenStore(filepath.Join(t.TempDir(), "archive.sqlite"), false)
 	if err != nil {
