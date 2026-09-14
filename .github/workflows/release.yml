@@ -2,10 +2,10 @@ name: release
 
 on:
   push:
-    tags: ["v0.8.10"]
+    tags: ["v0.8.11"]
 
 concurrency:
-  group: release-v0.8.10
+  group: release-v0.8.11
   cancel-in-progress: false
 
 permissions:
@@ -32,11 +32,11 @@ jobs:
         run: |
           set -euo pipefail
           test "$GITHUB_REPOSITORY" = "linonetwo/cpa-session-archive"
-          test "$GITHUB_REF" = "refs/tags/v0.8.10"
-          test "$GITHUB_REF_NAME" = "v0.8.10"
+          test "$GITHUB_REF" = "refs/tags/v0.8.11"
+          test "$GITHUB_REF_NAME" = "v0.8.11"
           test "$(git rev-parse --verify HEAD)" = "$GITHUB_SHA"
           [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]
-          test "$(sed -n 's/^const Version = "\([^"]*\)"$/\1/p' internal/archive/version.go)" = "0.8.10"
+          test "$(sed -n 's/^const Version = "\([^"]*\)"$/\1/p' internal/archive/version.go)" = "0.8.11"
           git fetch --no-tags origin main
           git merge-base --is-ancestor "$GITHUB_SHA" origin/main
           test -z "$(git status --porcelain=v1 --untracked-files=all)"
@@ -81,13 +81,13 @@ jobs:
           CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -trimpath -buildvcs=false -ldflags="$ldflags" -o dist/cpa-session-archive-backup-linux-amd64 ./cmd/cpa-session-archive-backup
           cp dist/cpa-session-archive-linux-amd64.so dist/cpa-session-archive-linux-amd64.h dist/package/
           find dist -type f -exec touch --date="@$SOURCE_DATE_EPOCH" {} +
-          (cd dist/package && zip -X ../cpa-session-archive_0.8.10_linux_amd64.zip cpa-session-archive-linux-amd64.so cpa-session-archive-linux-amd64.h)
+          (cd dist/package && zip -X ../cpa-session-archive_0.8.11_linux_amd64.zip cpa-session-archive-linux-amd64.so cpa-session-archive-linux-amd64.h)
           rm -rf dist/package
           (cd dist && sha256sum -- * | LC_ALL=C sort > SHA256SUMS)
       - name: Upload binaries for the release assembly
         uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808 # v4
         with:
-          name: cpa-session-archive-v0.8.10-binaries-${{ github.sha }}
+          name: cpa-session-archive-v0.8.11-binaries-${{ github.sha }}
           path: dist/
           if-no-files-found: error
           retention-days: 7
@@ -128,7 +128,7 @@ jobs:
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.version=0.8.10
+            org.opencontainers.image.version=0.8.11
           cache-from: type=gha,scope=cpa-session-archive
           cache-to: type=gha,mode=max,scope=cpa-session-archive
           provenance: mode=max
@@ -181,7 +181,7 @@ jobs:
       - name: Upload verified image evidence for the release assembly
         uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808 # v4
         with:
-          name: cpa-session-archive-v0.8.10-image-${{ github.sha }}
+          name: cpa-session-archive-v0.8.11-image-${{ github.sha }}
           path: |
             image-digest.json
             native-attestations/
@@ -197,7 +197,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          pattern: cpa-session-archive-v0.8.10-*-${{ github.sha }}
+          pattern: cpa-session-archive-v0.8.11-*-${{ github.sha }}
           path: dist
           merge-multiple: true
       - name: Assemble and verify the immutable release manifest
@@ -213,7 +213,7 @@ jobs:
                 --argjson bytes "$(stat -c '%s' "dist/$name")" '{name:$name,sha256:$sha256,bytes:$bytes}'
             done | jq --slurp '.' > "$assets"
           jq --null-input \
-            --arg version "0.8.10" \
+            --arg version "0.8.11" \
             --arg commit "$GITHUB_SHA" \
             --arg source "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
             --arg run_url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
@@ -222,23 +222,23 @@ jobs:
             '{schema_version:1,version:$version,commit:$commit,source:$source,run_url:$run_url,image:$image[0],assets:$assets[0]}' \
             > dist/release-manifest.json
           jq -e --arg commit "$GITHUB_SHA" '
-            .schema_version == 1 and .version == "0.8.10" and .commit == $commit and
+            .schema_version == 1 and .version == "0.8.11" and .commit == $commit and
             .image.revision == $commit and .image.tag == $commit and
             (.image.digest | test("^sha256:[0-9a-f]{64}$")) and
             (.assets | length >= 6)
           ' dist/release-manifest.json >/dev/null
-      - name: Publish v0.8.10 GitHub Release only after both artifact sets verify
+      - name: Publish v0.8.11 GitHub Release only after both artifact sets verify
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
-          tag_name: v0.8.10
-          name: cpa-session-archive v0.8.10
+          tag_name: v0.8.11
+          name: cpa-session-archive v0.8.11
           generate_release_notes: true
           make_latest: false
           fail_on_unmatched_files: true
           files: |
             dist/cpa-session-archive-linux-amd64.so
             dist/cpa-session-archive-linux-amd64.h
-            dist/cpa-session-archive_0.8.10_linux_amd64.zip
+            dist/cpa-session-archive_0.8.11_linux_amd64.zip
             dist/cpa-session-collector-linux-amd64
             dist/cpa-session-identity-migrate-linux-amd64
             dist/cpa-session-archive-backup-linux-amd64
