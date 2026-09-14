@@ -324,6 +324,7 @@ func (s *server) stableSessions(w http.ResponseWriter, r *http.Request) {
 		"limit":                    true,
 		"snapshot":                 true,
 		"cursor":                   true,
+		"metadata_touch":           true,
 	}
 	for key := range r.URL.Query() {
 		if !allowed[key] {
@@ -334,6 +335,14 @@ func (s *server) stableSessions(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("cursor_protocol") != archive.StableCursorProtocol {
 		stableError(w, http.StatusBadRequest, "unsupported cursor protocol")
 		return
+	}
+	metadataTouch := false
+	if values, present := r.URL.Query()["metadata_touch"]; present {
+		if len(values) != 1 || values[0] != "1" {
+			stableError(w, http.StatusBadRequest, "invalid stable session query")
+			return
+		}
+		metadataTouch = true
 	}
 	lowerRaw := strings.TrimSpace(r.URL.Query().Get("lower_bound_completed_at"))
 	lowerBound, err := time.Parse(time.RFC3339Nano, lowerRaw)
@@ -363,7 +372,7 @@ func (s *server) stableSessions(w http.ResponseWriter, r *http.Request) {
 	}
 	snapshotID := strings.TrimSpace(r.URL.Query().Get("snapshot"))
 	cursor := strings.TrimSpace(r.URL.Query().Get("cursor"))
-	if len(snapshotID) > 128 || (cursor != "" && snapshotID == "") {
+	if len(snapshotID) > 128 || (cursor != "" && snapshotID == "") || (metadataTouch && (snapshotID == "" || cursor != "")) {
 		stableError(w, http.StatusBadRequest, "invalid stable session cursor")
 		return
 	}
@@ -397,6 +406,12 @@ func (s *server) stableSessions(w http.ResponseWriter, r *http.Request) {
 		default:
 			stableError(w, http.StatusInternalServerError, "stable session snapshot failed")
 		}
+		return
+	}
+	if metadataTouch {
+		metadata := stableSnapshotMetadata(entry)
+		metadata["metadata_touch"] = true
+		writeJSON(w, metadata)
 		return
 	}
 	afterLastAt, afterSessionID := "", ""
@@ -437,7 +452,15 @@ func (s *server) stableSessions(w http.ResponseWriter, r *http.Request) {
 		}
 		nextCursor = token
 	}
-	writeJSON(w, map[string]any{
+	response := stableSnapshotMetadata(entry)
+	response["sessions"] = page
+	response["complete"] = next == nil
+	response["next_cursor"] = nextCursor
+	writeJSON(w, response)
+}
+
+func stableSnapshotMetadata(entry *stableSnapshotEntry) map[string]any {
+	return map[string]any{
 		"snapshot_schema_version":           archive.StableSnapshotSchemaVersion,
 		"cursor_protocol":                   archive.StableCursorProtocol,
 		"snapshot":                          entry.ID,
@@ -447,10 +470,7 @@ func (s *server) stableSessions(w http.ResponseWriter, r *http.Request) {
 		"request_count":                     entry.Snapshot.RequestCount(),
 		"deleted_session_count":             entry.Snapshot.DeletedSessionCount(),
 		"session_set_sha256":                entry.Snapshot.SessionSetSHA256(),
-		"sessions":                          page,
-		"complete":                          next == nil,
-		"next_cursor":                       nextCursor,
-	})
+	}
 }
 
 func stableError(w http.ResponseWriter, status int, message string) {

@@ -408,7 +408,7 @@ func TestStableSnapshotMetadataTouchDoesNotWaitForActiveExport(t *testing.T) {
 	replayDone := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
 		replay := httptest.NewRecorder()
-		server.sessions(replay, httptest.NewRequest(http.MethodGet, base+"&snapshot="+url.QueryEscape(page.Snapshot), nil))
+		server.sessions(replay, httptest.NewRequest(http.MethodGet, base+"&snapshot="+url.QueryEscape(page.Snapshot)+"&metadata_touch=1", nil))
 		replayDone <- replay
 	}()
 	select {
@@ -416,8 +416,32 @@ func TestStableSnapshotMetadataTouchDoesNotWaitForActiveExport(t *testing.T) {
 		if replay.Code != http.StatusOK {
 			t.Fatalf("metadata touch status=%d body=%s", replay.Code, replay.Body.String())
 		}
+		var touch map[string]any
+		if err := json.Unmarshal(replay.Body.Bytes(), &touch); err != nil {
+			t.Fatal(err)
+		}
+		if touch["metadata_touch"] != true || touch["snapshot"] != page.Snapshot {
+			t.Fatalf("metadata touch identity=%+v", touch)
+		}
+		for _, forbidden := range []string{"sessions", "complete", "next_cursor"} {
+			if _, present := touch[forbidden]; present {
+				t.Fatalf("metadata touch included pagination field %q: %+v", forbidden, touch)
+			}
+		}
 	case <-time.After(time.Second):
 		t.Fatal("metadata touch waited for the active archive materialization")
+	}
+
+	for _, invalid := range []string{
+		base + "&metadata_touch=1",
+		base + "&snapshot=" + url.QueryEscape(page.Snapshot) + "&metadata_touch=true",
+		base + "&snapshot=" + url.QueryEscape(page.Snapshot) + "&metadata_touch=1&metadata_touch=1",
+	} {
+		response := httptest.NewRecorder()
+		server.sessions(response, httptest.NewRequest(http.MethodGet, invalid, nil))
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("invalid metadata touch status=%d body=%s", response.Code, response.Body.String())
+		}
 	}
 
 	close(writer.release)
