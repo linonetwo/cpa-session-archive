@@ -369,7 +369,7 @@ func TestStableSnapshotMetadataTouchDoesNotWaitForActiveExport(t *testing.T) {
 	}}, 1)
 	defer closeServer()
 	var clock atomic.Int64
-	clock.Store(when.Add(time.Hour).UnixNano())
+	clock.Store(time.Now().UTC().UnixNano())
 	registry.now = func() time.Time { return time.Unix(0, clock.Load()).UTC() }
 	registry.ttl = 6 * time.Hour
 	registry.idleTTL = time.Minute
