@@ -38,7 +38,7 @@ instead of being silently discarded.
 ## Build
 
 The protected `main` branch runs the complete Go, race, TypeScript, browser,
-native-binary, and container gates once. The exact `v0.8.4` tag may publish
+native-binary, and container gates once. The exact `v0.8.5` tag may publish
 only after GitHub verifies that the same 40-character commit has a successful
 `main` CI run. The release workflow then publishes one GHCR tag containing
 that complete commit SHA, verifies the returned digest, native SBOM and SLSA
@@ -48,7 +48,7 @@ version image tag.
 
 The GitHub Release contains the native plugin (`.so` and generated `.h`), the
 collector, identity migrator, online backup tool, checksums, image digest, and
-attestation evidence. See [v0.8.4 release contract](docs/release-v0.8.4.md).
+attestation evidence. See [v0.8.5 release contract](docs/release-v0.8.5.md).
 Local and cluster nodes must consume the recorded `ghcr.io/...@sha256:...`
 reference and never build a deployment image themselves.
 

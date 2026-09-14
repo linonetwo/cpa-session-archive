@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"path/filepath"
 	"testing"
@@ -62,6 +63,70 @@ func TestExportSessionJSONLIsCompleteAndStructured(t *testing.T) {
 	}
 	if count != 2 {
 		t.Fatalf("exported %d records, want 2", count)
+	}
+}
+
+func TestExportSessionJSONLSeeksAcrossEqualTimestampBatchBoundary(t *testing.T) {
+	store, err := OpenStore(filepath.Join(t.TempDir(), "archive.sqlite"), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.DB.Close()
+	now := time.Now().UTC()
+	for i := 0; i < archiveExportBatchSize+2; i++ {
+		record := Record{RequestID: fmt.Sprintf("request-%03d", i), SessionID: "session", StartedAt: now, CompletedAt: now, OriginalRequest: []byte(`{"input":"request"}`), Response: []byte(`{"output":"response"}`)}
+		if err = store.PutBatch([]Record{record}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var legacy bytes.Buffer
+	if err = store.ExportArchiveJSONL(context.Background(), "", &legacy); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err = store.ExportSessionJSONL(context.Background(), "session", &out); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(out.Bytes(), legacy.Bytes()) {
+		t.Fatal("bounded session export changed JSONL bytes")
+	}
+	seen := map[string]bool{}
+	scanner := bufio.NewScanner(&out)
+	for scanner.Scan() {
+		var item struct {
+			RequestID string `json:"request_id"`
+		}
+		if err = json.Unmarshal(scanner.Bytes(), &item); err != nil {
+			t.Fatal(err)
+		}
+		if item.RequestID == "" || seen[item.RequestID] {
+			t.Fatalf("duplicate or empty request id %q", item.RequestID)
+		}
+		seen[item.RequestID] = true
+	}
+	if err = scanner.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if len(seen) != archiveExportBatchSize+2 {
+		t.Fatalf("exported %d records, want %d", len(seen), archiveExportBatchSize+2)
+	}
+}
+
+func TestArchiveExportMemoryBoundaries(t *testing.T) {
+	if archiveExportBatchShouldStop(archiveExportBatchBytes - 1) {
+		t.Fatal("batch stopped below byte waterline")
+	}
+	if !archiveExportBatchShouldStop(archiveExportBatchBytes) {
+		t.Fatal("batch did not stop at byte waterline")
+	}
+	if !archivePayloadCacheCanStore(archiveExportCacheBytes-archiveExportCacheEntryBytes, archiveExportCacheEntryBytes) {
+		t.Fatal("cache rejected an entry that exactly fits")
+	}
+	if archivePayloadCacheCanStore(archiveExportCacheBytes, 1) {
+		t.Fatal("cache accepted bytes beyond its total bound")
+	}
+	if archivePayloadCacheCanStore(0, archiveExportCacheEntryBytes+1) {
+		t.Fatal("cache accepted an oversized entry")
 	}
 }
 
