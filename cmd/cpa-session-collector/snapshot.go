@@ -48,15 +48,16 @@ type stableCursorClaims struct {
 }
 
 type stableSnapshotEntry struct {
-	ID          string
-	LowerBound  string
-	AfterFence  string
-	Limit       int
-	CreatedAt   time.Time
-	LastUsedAt  time.Time
-	ExpiresAt   time.Time
-	Snapshot    *archive.StableSessionSnapshot
-	CursorState map[string]stableCursorClaims
+	ID            string
+	LowerBound    string
+	AfterFence    string
+	Limit         int
+	CreatedAt     time.Time
+	LastUsedAt    time.Time
+	ExpiresAt     time.Time
+	Snapshot      *archive.StableSessionSnapshot
+	CursorState   map[string]stableCursorClaims
+	ActiveExports int
 }
 
 type stableSnapshotRegistry struct {
@@ -95,6 +96,9 @@ func newStableSnapshotRegistry(ttl, idleTTL time.Duration, maxActive int) (*stab
 
 func (registry *stableSnapshotRegistry) cleanupLocked(now time.Time) {
 	for id, entry := range registry.snapshots {
+		if entry.ActiveExports > 0 {
+			continue
+		}
 		if !now.Before(entry.ExpiresAt) || now.Sub(entry.LastUsedAt) >= registry.idleTTL {
 			_ = entry.Snapshot.Close()
 			delete(registry.snapshots, id)
@@ -147,47 +151,66 @@ func (registry *stableSnapshotRegistry) create(store *archive.Store, lowerBound 
 func (registry *stableSnapshotRegistry) get(id, lowerBound, afterFence string, limit int) (*stableSnapshotEntry, error) {
 	registry.mu.Lock()
 	defer registry.mu.Unlock()
-	registry.cleanupLocked(registry.now())
+	now := registry.now()
+	registry.cleanupLocked(now)
 	entry, ok := registry.snapshots[id]
-	if !ok {
+	if !ok || !now.Before(entry.ExpiresAt) {
 		return nil, errStableSnapshotExpired
 	}
 	if entry.LowerBound != lowerBound || entry.AfterFence != afterFence || entry.Limit != limit {
 		return nil, archive.ErrSnapshotCursor
 	}
-	entry.LastUsedAt = registry.now()
+	entry.LastUsedAt = now
 	return entry, nil
 }
 
 func (registry *stableSnapshotRegistry) getForExport(id string) (*stableSnapshotEntry, error) {
 	registry.mu.Lock()
 	defer registry.mu.Unlock()
-	registry.cleanupLocked(registry.now())
+	now := registry.now()
+	registry.cleanupLocked(now)
 	entry, ok := registry.snapshots[id]
-	if !ok {
+	if !ok || !now.Before(entry.ExpiresAt) {
 		return nil, errStableSnapshotExpired
 	}
-	entry.LastUsedAt = registry.now()
+	entry.LastUsedAt = now
 	return entry, nil
 }
 
 func (registry *stableSnapshotRegistry) export(ctx context.Context, id, sessionID, digest string, destination io.Writer) error {
 	registry.mu.Lock()
-	defer registry.mu.Unlock()
 	now := registry.now()
 	registry.cleanupLocked(now)
 	entry, ok := registry.snapshots[id]
-	if !ok {
+	if !ok || !now.Before(entry.ExpiresAt) {
+		registry.mu.Unlock()
 		return errStableSnapshotExpired
 	}
 	entry.LastUsedAt = now
+	entry.ActiveExports++
+	registry.mu.Unlock()
+
 	exportContext, cancel := context.WithDeadline(ctx, entry.ExpiresAt)
 	defer cancel()
 	err := entry.Snapshot.ExportSessionJSONL(exportContext, sessionID, digest, destination)
-	entry.LastUsedAt = registry.now()
-	if !entry.LastUsedAt.Before(entry.ExpiresAt) {
+	finishedAt := registry.now()
+	closeSnapshot := false
+	registry.mu.Lock()
+	entry.ActiveExports--
+	if current, present := registry.snapshots[id]; present && current == entry {
+		entry.LastUsedAt = finishedAt
+		if !finishedAt.Before(entry.ExpiresAt) {
+			if entry.ActiveExports == 0 {
+				delete(registry.snapshots, id)
+				closeSnapshot = true
+			}
+		}
+	}
+	registry.mu.Unlock()
+	if closeSnapshot {
 		_ = entry.Snapshot.Close()
-		delete(registry.snapshots, id)
+	}
+	if !finishedAt.Before(entry.ExpiresAt) {
 		if err == nil {
 			err = errStableSnapshotExpired
 		}
@@ -201,7 +224,7 @@ func (registry *stableSnapshotRegistry) validateExport(id, sessionID, digest str
 	now := registry.now()
 	registry.cleanupLocked(now)
 	entry, ok := registry.snapshots[id]
-	if !ok {
+	if !ok || !now.Before(entry.ExpiresAt) {
 		return errStableSnapshotExpired
 	}
 	summary, found := entry.Snapshot.Summary(sessionID)
