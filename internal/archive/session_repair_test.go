@@ -4,11 +4,13 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -127,6 +129,139 @@ func TestArchiveExportMemoryBoundaries(t *testing.T) {
 	}
 	if archivePayloadCacheCanStore(0, archiveExportCacheEntryBytes+1) {
 		t.Fatal("cache accepted an oversized entry")
+	}
+}
+
+type countingQueryContext struct {
+	db    *sql.DB
+	query int
+}
+
+func (q *countingQueryContext) QueryContext(ctx context.Context, statement string, args ...any) (*sql.Rows, error) {
+	q.query++
+	return q.db.QueryContext(ctx, statement, args...)
+}
+
+func (q *countingQueryContext) QueryRowContext(ctx context.Context, statement string, args ...any) *sql.Row {
+	return q.db.QueryRowContext(ctx, statement, args...)
+}
+
+func TestStableSessionArchivePrefetchesReachableSmallCASBlobs(t *testing.T) {
+	store, err := OpenStore(filepath.Join(t.TempDir(), "archive.sqlite"), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.DB.Close()
+
+	now := time.Now().UTC()
+	for i := 0; i < 3; i++ {
+		payload := []byte(`{"input":"` + strings.Repeat(string(rune('a'+i)), inlineThreshold+1) + `"}`)
+		response := []byte(`{"output":"` + strings.Repeat(string(rune('d'+i)), inlineThreshold+1) + `"}`)
+		if err = store.PutBatch([]Record{{
+			RequestID:       fmt.Sprintf("prefetch-%d", i),
+			SessionID:       "session",
+			StartedAt:       now.Add(time.Duration(i) * time.Second),
+			CompletedAt:     now.Add(time.Duration(i) * time.Second),
+			OriginalRequest: payload,
+			Response:        response,
+		}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	rows, err := store.DB.Query(`SELECT id,session_id,request_id,trace_id,COALESCE(key_id,''),COALESCE(principal_id,''),COALESCE(credential_hash,''),COALESCE((SELECT alias FROM credential_principals p WHERE p.principal_id=records.principal_id AND alias<>'' ORDER BY updated_at DESC LIMIT 1),''),COALESCE(summary,''),COALESCE(response_preview,''),COALESCE(source_format,''),COALESCE(requested_model,''),COALESCE(model,''),stream,COALESCE(outcome,''),status_code,COALESCE(error,''),started_at,completed_at,COALESCE(parent_response_id,''),COALESCE(response_id,''),COALESCE(original_ref,''),COALESCE(upstream_ref,''),COALESCE(response_ref,''),truncated,COALESCE(metadata_json,''),COALESCE(facets_json,''),original_request_gz,upstream_request_gz,response_gz FROM records WHERE session_id=? ORDER BY started_at,id`, "session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var batch []archiveExportRow
+	for rows.Next() {
+		item, scanErr := scanArchiveExportRow(rows)
+		if scanErr != nil {
+			_ = rows.Close()
+			t.Fatal(scanErr)
+		}
+		batch = append(batch, item)
+	}
+	if err = rows.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	q := &countingQueryContext{db: store.DB}
+	cache := archivePayloadCache{values: map[string][]byte{}}
+	if err = prefetchArchivePayloads(context.Background(), q, batch, &cache); err != nil {
+		t.Fatal(err)
+	}
+	// Roots and their nested small values use one metadata query plus one value
+	// query per manifest depth, rather than a point query for every reference.
+	if q.query > 4 {
+		t.Fatalf("prefetch made %d queries, want at most four bounded batch queries", q.query)
+	}
+	if cache.bytes > archiveExportCacheBytes {
+		t.Fatalf("cache retained %d bytes, bound is %d", cache.bytes, archiveExportCacheBytes)
+	}
+
+	var legacy, bounded bytes.Buffer
+	if err = store.ExportArchiveJSONL(context.Background(), "", &legacy); err != nil {
+		t.Fatal(err)
+	}
+	if err = store.ExportSessionJSONL(context.Background(), "session", &bounded); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(legacy.Bytes(), bounded.Bytes()) {
+		t.Fatal("prefetched bounded export changed JSONL bytes")
+	}
+}
+
+func TestStableSessionArchiveDoesNotReadDiscardedUpstreamPayload(t *testing.T) {
+	store, err := OpenStore(filepath.Join(t.TempDir(), "archive.sqlite"), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.DB.Close()
+	now := time.Now().UTC()
+	if err = store.PutBatch([]Record{{RequestID: "no-upstream-read", SessionID: "session", StartedAt: now, CompletedAt: now, OriginalRequest: []byte(`{"input":"ok"}`), Response: []byte(`{"output":"ok"}`)}}); err != nil {
+		t.Fatal(err)
+	}
+	// A historical upstream reference can be absent or corrupt without changing
+	// the archive schema, because TrainingRecord does not emit it.
+	if _, err = store.DB.Exec(`UPDATE records SET upstream_ref=? WHERE request_id=?`, "sha256:not-present", "no-upstream-read"); err != nil {
+		t.Fatal(err)
+	}
+	if err = store.ExportSessionJSONL(context.Background(), "session", &bytes.Buffer{}); err != nil {
+		t.Fatalf("unused upstream reference blocked export: %v", err)
+	}
+}
+
+func TestStableSessionArchiveSeekPlanUsesSessionTimeIndexWithoutSort(t *testing.T) {
+	store, err := OpenStore(filepath.Join(t.TempDir(), "archive.sqlite"), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.DB.Close()
+	rows, err := store.DB.Query(`EXPLAIN QUERY PLAN SELECT id,session_id,request_id,started_at FROM records WHERE session_id=? AND (started_at>? OR (started_at=? AND id>?)) ORDER BY started_at,id LIMIT ?`, "session", "", "", 0, archiveExportBatchSize)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	indexed := false
+	for rows.Next() {
+		var id, parent, unused int
+		var detail string
+		if err = rows.Scan(&id, &parent, &unused, &detail); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(detail, "idx_records_session_time") {
+			indexed = true
+		}
+		if strings.Contains(detail, "USE TEMP B-TREE") {
+			t.Fatalf("stable session seek plan sorts with temp b-tree: %s", detail)
+		}
+	}
+	if err = rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if !indexed {
+		t.Fatal("stable session seek plan did not use idx_records_session_time")
 	}
 }
 

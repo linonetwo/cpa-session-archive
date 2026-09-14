@@ -789,6 +789,15 @@ func (s *Store) exportSessionArchiveBatches(ctx context.Context, sessionID strin
 			return err
 		}
 		payloadCache := archivePayloadCache{values: map[string][]byte{}}
+		// A stable ticket is materialized before the HTTP response is committed.
+		// Prefetch the small CAS manifests and their reachable small children for
+		// this bounded batch so a long session does not turn into a random SQLite
+		// lookup and gzip operation per payload reference. Large blobs deliberately
+		// keep the established one-at-a-time path below: a valid large record must
+		// remain exportable without being retained in the batch cache.
+		if err = prefetchArchivePayloads(ctx, s.DB, batch, &payloadCache); err != nil {
+			return err
+		}
 		for _, item := range batch {
 			if err = s.encodeArchiveExportRow(ctx, enc, dst, item, &payloadCache); err != nil {
 				return err
@@ -846,14 +855,9 @@ func (s *Store) encodeArchiveExportRow(ctx context.Context, enc *json.Encoder, d
 	if err != nil {
 		return err
 	}
-	if item.ur != "" {
-		item.record.UpstreamRequest, err = loadPayloadWithCache(ctx, s.DB, item.ur, payloadCache)
-	} else if s.StoreUpstream {
-		item.record.UpstreamRequest = gunzipBytes(item.oldU)
-	}
-	if err != nil {
-		return err
-	}
+	// TrainingRecord intentionally has no upstream field. Do not materialize an
+	// upstream payload merely to discard it; this is particularly expensive for
+	// historical proxy records and cannot affect the emitted JSONL bytes.
 	if item.rr != "" {
 		item.record.Response, err = loadPayloadWithCache(ctx, s.DB, item.rr, payloadCache)
 	} else {
@@ -900,6 +904,204 @@ func loadPayloadWithCache(ctx context.Context, q queryContext, hash string, cach
 		return nil, err
 	}
 	return ExpandPayload(manifest, load)
+}
+
+// prefetchArchivePayloads batches only the payloads emitted by TrainingRecord.
+// Upstream payloads are not part of that schema and must not cause clone I/O.
+func prefetchArchivePayloads(ctx context.Context, q queryContext, batch []archiveExportRow, cache *archivePayloadCache) error {
+	roots := make([]string, 0, len(batch)*2)
+	for _, item := range batch {
+		if item.or != "" {
+			roots = append(roots, item.or)
+		}
+		if item.rr != "" {
+			roots = append(roots, item.rr)
+		}
+	}
+	return prefetchPayloadBlobClosure(ctx, q, roots, cache)
+}
+
+// prefetchPayloadBlobClosure follows only JSON CAS manifests. It keeps the
+// existing cache bounds: oversized or capacity-exceeding blobs are left for
+// loadPayloadWithCache's established single-record path instead of being
+// rejected or accumulated in memory.
+func prefetchPayloadBlobClosure(ctx context.Context, q queryContext, roots []string, cache *archivePayloadCache) error {
+	pending := append([]string(nil), roots...)
+	inspect := append([]string(nil), roots...)
+	loaded := map[string]bool{}
+	inspected := map[string]bool{}
+	for len(pending) > 0 || len(inspect) > 0 {
+		if len(pending) > 0 {
+			need := make([]string, 0, len(pending))
+			for _, hash := range pending {
+				if hash == "" || loaded[hash] {
+					continue
+				}
+				loaded[hash] = true
+				if _, ok := cache.values[hash]; !ok {
+					need = append(need, hash)
+				}
+			}
+			pending = nil
+			if err := prefetchSmallBlobValues(ctx, q, need, cache); err != nil {
+				return err
+			}
+		}
+
+		current := inspect
+		inspect = nil
+		for _, hash := range current {
+			if hash == "" || inspected[hash] {
+				continue
+			}
+			inspected[hash] = true
+			manifest, ok := cache.values[hash]
+			if !ok {
+				continue
+			}
+			refs, jsonRefs, ok := payloadBlobReferences(manifest)
+			if !ok {
+				// Let the normal expansion path preserve its established error.
+				continue
+			}
+			pending = append(pending, refs...)
+			inspect = append(inspect, jsonRefs...)
+		}
+	}
+	return nil
+}
+
+// payloadBlobReferences reports all directly referenced blobs, plus the ones
+// whose contents are themselves JSON manifests and therefore need traversal.
+func payloadBlobReferences(raw []byte) (refs, jsonRefs []string, ok bool) {
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return nil, nil, false
+	}
+	var visit func(any)
+	visit = func(v any) {
+		switch x := v.(type) {
+		case []any:
+			for _, child := range x {
+				visit(child)
+			}
+		case map[string]any:
+			if hash, valid := x["$cpa_blob"].(string); valid && hash != "" {
+				refs = append(refs, hash)
+				if encoding, _ := x["encoding"].(string); encoding == "json" {
+					jsonRefs = append(jsonRefs, hash)
+				}
+				return
+			}
+			for _, child := range x {
+				visit(child)
+			}
+		}
+	}
+	visit(value)
+	return refs, jsonRefs, true
+}
+
+// prefetchSmallBlobValues first reads metadata, then reads only cache-eligible
+// values in one bounded IN query. raw_size is the uncompressed byte count, so
+// it is a conservative admission check for the decompressed cache budget.
+func prefetchSmallBlobValues(ctx context.Context, q queryContext, hashes []string, cache *archivePayloadCache) error {
+	for len(hashes) > 0 && cache.bytes < archiveExportCacheBytes {
+		end := len(hashes)
+		if end > archiveExportBatchSize {
+			end = archiveExportBatchSize
+		}
+		chunk := uniqueBlobHashes(hashes[:end])
+		hashes = hashes[end:]
+		if len(chunk) == 0 {
+			continue
+		}
+		placeholders, args := blobQueryArgs(chunk)
+		rows, err := q.QueryContext(ctx, `SELECT hash,raw_size FROM blobs WHERE hash IN (`+placeholders+`)`, args...)
+		if err != nil {
+			return err
+		}
+		eligible := make([]string, 0, len(chunk))
+		reserved := cache.bytes
+		for rows.Next() {
+			var hash string
+			var rawSize int64
+			if err = rows.Scan(&hash, &rawSize); err != nil {
+				_ = rows.Close()
+				return err
+			}
+			if rawSize >= 0 && rawSize <= int64(archiveExportCacheEntryBytes) && archivePayloadCacheCanStore(reserved, int(rawSize)) {
+				eligible = append(eligible, hash)
+				reserved += int(rawSize)
+			}
+		}
+		if err = rows.Err(); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		if err = rows.Close(); err != nil {
+			return err
+		}
+		if len(eligible) == 0 {
+			continue
+		}
+		placeholders, args = blobQueryArgs(eligible)
+		rows, err = q.QueryContext(ctx, `SELECT hash,codec,data FROM blobs WHERE hash IN (`+placeholders+`)`, args...)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var hash, codec string
+			var data []byte
+			if err = rows.Scan(&hash, &codec, &data); err != nil {
+				_ = rows.Close()
+				return err
+			}
+			if codec == "gzip" {
+				data, err = gunzipBytesChecked(data)
+				if err != nil {
+					_ = rows.Close()
+					return err
+				}
+			}
+			if archivePayloadCacheCanStore(cache.bytes, len(data)) {
+				cache.values[hash] = data
+				cache.bytes += len(data)
+			}
+		}
+		if err = rows.Err(); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		if err = rows.Close(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func uniqueBlobHashes(hashes []string) []string {
+	seen := make(map[string]struct{}, len(hashes))
+	out := make([]string, 0, len(hashes))
+	for _, hash := range hashes {
+		if hash == "" {
+			continue
+		}
+		if _, ok := seen[hash]; ok {
+			continue
+		}
+		seen[hash] = struct{}{}
+		out = append(out, hash)
+	}
+	return out
+}
+
+func blobQueryArgs(hashes []string) (string, []any) {
+	args := make([]any, len(hashes))
+	for i, hash := range hashes {
+		args[i] = hash
+	}
+	return strings.TrimSuffix(strings.Repeat("?,", len(hashes)), ","), args
 }
 
 // Full archives retain their legacy path. Stable ticketed exports always name
