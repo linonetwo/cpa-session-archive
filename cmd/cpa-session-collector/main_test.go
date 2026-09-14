@@ -1,9 +1,12 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -15,6 +18,52 @@ import (
 
 	"cpa-session-archive/internal/archive"
 )
+
+func TestProcessingHeartbeatsRemainInterimUntilFinalResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeProcessing(w)
+		writeProcessing(w)
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer server.Close()
+
+	connection, err := net.Dial("tcp", strings.TrimPrefix(server.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	if err = connection.SetDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = io.WriteString(connection, "GET / HTTP/1.1\r\nHost: collector\r\nConnection: close\r\n\r\n"); err != nil {
+		t.Fatal(err)
+	}
+
+	reader := bufio.NewReader(connection)
+	request := &http.Request{Method: http.MethodGet}
+	for _, want := range []int{http.StatusProcessing, http.StatusProcessing, http.StatusOK} {
+		response, err := http.ReadResponse(reader, request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if response.StatusCode != want {
+			t.Fatalf("status=%d, want %d", response.StatusCode, want)
+		}
+		if want == http.StatusOK {
+			body, readErr := io.ReadAll(response.Body)
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			if string(body) != "ok" {
+				t.Fatalf("body=%q", body)
+			}
+		}
+		if err = response.Body.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
 
 func TestReadinessWaitsForRepairsAndTurnBackfills(t *testing.T) {
 	store, err := archive.OpenStore(filepath.Join(t.TempDir(), "archive.sqlite"), false)

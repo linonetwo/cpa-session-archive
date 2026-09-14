@@ -683,10 +683,7 @@ func (s *server) ticketedExport(w http.ResponseWriter, r *http.Request) {
 				// standards-defined interim response, so the completed snapshot
 				// can still return a machine-readable error instead of a partial
 				// attachment if materialization or digest verification fails.
-				w.WriteHeader(http.StatusProcessing)
-				if flusher, ok := w.(http.Flusher); ok {
-					flusher.Flush()
-				}
+				writeProcessing(w)
 			}
 			stableArtifact, stableArtifactSize, err = s.prepareStableSnapshotExport(r, ticket, heartbeat)
 		}
@@ -737,6 +734,15 @@ func (s *server) ticketedExport(w http.ResponseWriter, r *http.Request) {
 		log.Printf("ticketed session export failed id=%s: %v", ticket.SessionID, e)
 	}
 }
+
+// writeProcessing deliberately does not call ResponseWriter.Flush. net/http
+// flushes an interim 1xx response itself; calling Flush afterwards commits a
+// final 200 response, which prevents every later 102 (and a final error) from
+// reaching the client.
+func writeProcessing(w http.ResponseWriter) {
+	w.WriteHeader(http.StatusProcessing)
+}
+
 func safeFilename(v string) string {
 	var b strings.Builder
 	for _, r := range v {
