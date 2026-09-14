@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -63,6 +64,20 @@ type stablePageResponse struct {
 	Sessions                      []archive.StableSessionSummary `json:"sessions"`
 	Complete                      bool                           `json:"complete"`
 	NextCursor                    *string                        `json:"next_cursor"`
+}
+
+type blockedExportWriter struct {
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (writer *blockedExportWriter) Write(payload []byte) (int, error) {
+	writer.once.Do(func() {
+		close(writer.started)
+		<-writer.release
+	})
+	return len(payload), nil
 }
 
 func refreshHTTPTestDigests(t *testing.T, store *archive.Store) {
@@ -343,6 +358,77 @@ func TestStableSnapshotTicketExportsExactSnapshot(t *testing.T) {
 	sum := sha256.Sum256(downloadResponse.Body.Bytes())
 	if hex.EncodeToString(sum[:]) != ticket.RecordsSHA256 {
 		t.Fatalf("download digest=%s expected=%s", hex.EncodeToString(sum[:]), ticket.RecordsSHA256)
+	}
+}
+
+func TestStableSnapshotMetadataTouchDoesNotWaitForActiveExport(t *testing.T) {
+	when := time.Date(2026, 8, 21, 1, 2, 3, 0, time.UTC)
+	server, registry, closeServer := snapshotTestServer(t, []archive.Record{{
+		RequestID: "request", SessionID: "session", StartedAt: when, CompletedAt: when,
+		OriginalRequest: []byte(`{"input":"old"}`), Outcome: "succeeded",
+	}}, 1)
+	defer closeServer()
+	var clock atomic.Int64
+	clock.Store(time.Now().UTC().UnixNano())
+	registry.now = func() time.Time { return time.Unix(0, clock.Load()).UTC() }
+	registry.ttl = 6 * time.Hour
+	registry.idleTTL = time.Minute
+	base := "/v1/sessions?cursor_protocol=" + url.QueryEscape(archive.StableCursorProtocol) +
+		"&lower_bound_completed_at=" + url.QueryEscape("2030-01-01T00:00:00Z") + "&limit=10"
+	response, page := requestStablePage(t, server, base)
+	if response.Code != http.StatusOK || len(page.Sessions) != 1 {
+		t.Fatalf("snapshot status=%d page=%+v", response.Code, page)
+	}
+
+	writer := &blockedExportWriter{started: make(chan struct{}), release: make(chan struct{})}
+	released := false
+	defer func() {
+		if !released {
+			close(writer.release)
+		}
+	}()
+	exportDone := make(chan error, 1)
+	go func() {
+		exportDone <- registry.export(context.Background(), page.Snapshot, "session", page.Sessions[0].RecordsSHA256, writer)
+	}()
+	select {
+	case <-writer.started:
+	case <-time.After(time.Second):
+		t.Fatal("stable export did not reach the deterministic writer barrier")
+	}
+	clock.Add(int64(2 * time.Minute))
+	registry.cleanup()
+	registry.mu.Lock()
+	_, retained := registry.snapshots[page.Snapshot]
+	registry.mu.Unlock()
+	if !retained {
+		t.Fatal("active export lost its registry pin at the idle lease boundary")
+	}
+
+	replayDone := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		replay := httptest.NewRecorder()
+		server.sessions(replay, httptest.NewRequest(http.MethodGet, base+"&snapshot="+url.QueryEscape(page.Snapshot), nil))
+		replayDone <- replay
+	}()
+	select {
+	case replay := <-replayDone:
+		if replay.Code != http.StatusOK {
+			t.Fatalf("metadata touch status=%d body=%s", replay.Code, replay.Body.String())
+		}
+	case <-time.After(time.Second):
+		t.Fatal("metadata touch waited for the active archive materialization")
+	}
+
+	close(writer.release)
+	released = true
+	select {
+	case err := <-exportDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("stable export did not finish after releasing the writer barrier")
 	}
 }
 

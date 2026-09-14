@@ -46,7 +46,8 @@ type StableSessionSummary struct {
 }
 
 type StableSessionSnapshot struct {
-	mu                 sync.Mutex
+	lifecycle          sync.RWMutex
+	exportMu           sync.Mutex
 	tx                 *sql.Tx
 	closed             bool
 	ingestFence        int64
@@ -274,8 +275,8 @@ func (snapshot *StableSessionSnapshot) SessionSetSHA256() string {
 }
 
 func (snapshot *StableSessionSnapshot) Page(afterLastAt, afterSessionID string, limit int) ([]StableSessionSummary, *StableSessionSummary, error) {
-	snapshot.mu.Lock()
-	defer snapshot.mu.Unlock()
+	snapshot.lifecycle.RLock()
+	defer snapshot.lifecycle.RUnlock()
 	if snapshot.closed || limit < 1 {
 		return nil, nil, ErrSnapshotCursor
 	}
@@ -306,8 +307,8 @@ func (snapshot *StableSessionSnapshot) Page(afterLastAt, afterSessionID string, 
 }
 
 func (snapshot *StableSessionSnapshot) Summary(sessionID string) (StableSessionSummary, bool) {
-	snapshot.mu.Lock()
-	defer snapshot.mu.Unlock()
+	snapshot.lifecycle.RLock()
+	defer snapshot.lifecycle.RUnlock()
 	if snapshot.closed {
 		return StableSessionSummary{}, false
 	}
@@ -320,8 +321,10 @@ func (snapshot *StableSessionSnapshot) Summary(sessionID string) (StableSessionS
 }
 
 func (snapshot *StableSessionSnapshot) ExportSessionJSONL(ctx context.Context, sessionID, expectedDigest string, destination io.Writer) error {
-	snapshot.mu.Lock()
-	defer snapshot.mu.Unlock()
+	snapshot.exportMu.Lock()
+	defer snapshot.exportMu.Unlock()
+	snapshot.lifecycle.RLock()
+	defer snapshot.lifecycle.RUnlock()
 	if snapshot.closed {
 		return ErrSnapshotCursor
 	}
@@ -348,8 +351,8 @@ func (snapshot *StableSessionSnapshot) ExportSessionJSONL(ctx context.Context, s
 }
 
 func (snapshot *StableSessionSnapshot) Close() error {
-	snapshot.mu.Lock()
-	defer snapshot.mu.Unlock()
+	snapshot.lifecycle.Lock()
+	defer snapshot.lifecycle.Unlock()
 	if snapshot.closed {
 		return nil
 	}
