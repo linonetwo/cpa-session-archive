@@ -678,7 +678,17 @@ func (s *server) ticketedExport(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodHead {
 			err = s.validateStableSnapshotExport(ticket)
 		} else {
-			stableArtifact, stableArtifactSize, err = s.prepareStableSnapshotExport(r, ticket)
+			heartbeat := func() {
+				// 102 does not commit the final attachment response. It is a
+				// standards-defined interim response, so the completed snapshot
+				// can still return a machine-readable error instead of a partial
+				// attachment if materialization or digest verification fails.
+				w.WriteHeader(http.StatusProcessing)
+				if flusher, ok := w.(http.Flusher); ok {
+					flusher.Flush()
+				}
+			}
+			stableArtifact, stableArtifactSize, err = s.prepareStableSnapshotExport(r, ticket, heartbeat)
 		}
 		if err != nil {
 			switch {

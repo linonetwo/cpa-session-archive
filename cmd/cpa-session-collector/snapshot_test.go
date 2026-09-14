@@ -12,11 +12,34 @@ import (
 	"net/url"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"cpa-session-archive/internal/archive"
 )
+
+func TestWaitStableSnapshotExportSendsHeartbeatsUntilMaterialized(t *testing.T) {
+	done := make(chan error, 1)
+	release := make(chan struct{}, 1)
+	var heartbeats atomic.Int32
+	go func() {
+		<-release
+		done <- nil
+	}()
+	if err := waitStableSnapshotExport(done, time.Millisecond, func() {
+		heartbeats.Add(1)
+		select {
+		case release <- struct{}{}:
+		default:
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if heartbeats.Load() == 0 {
+		t.Fatal("materializing stable export sent no informational heartbeat")
+	}
+}
 
 type stablePageResponse struct {
 	SnapshotSchemaVersion         int                            `json:"snapshot_schema_version"`

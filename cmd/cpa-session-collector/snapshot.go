@@ -32,6 +32,10 @@ const (
 	stableOfflineSnapshotTTL = 6 * time.Hour
 	stableSnapshotIdleTTL    = 2 * time.Minute
 	stableMaxActiveSnapshots = 1
+	// Stable exports are materialized before their final response is committed.
+	// Send an informational response well inside the migration client's socket
+	// idle budget while that verification is in progress.
+	stableExportHeartbeatInterval = 30 * time.Second
 )
 
 type stableCursorClaims struct {
@@ -466,7 +470,23 @@ func (s *server) validateStableSnapshotExport(ticket exportTicket) error {
 	return registry.validateExport(ticket.Snapshot, ticket.SessionID, ticket.RecordsSHA256)
 }
 
-func (s *server) prepareStableSnapshotExport(r *http.Request, ticket exportTicket) (*os.File, int64, error) {
+func waitStableSnapshotExport(done <-chan error, interval time.Duration, heartbeat func()) error {
+	if heartbeat == nil || interval <= 0 {
+		return <-done
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case err := <-done:
+			return err
+		case <-ticker.C:
+			heartbeat()
+		}
+	}
+}
+
+func (s *server) prepareStableSnapshotExport(r *http.Request, ticket exportTicket, heartbeat func()) (*os.File, int64, error) {
 	registry, err := s.stableRegistry()
 	if err != nil {
 		return nil, 0, err
@@ -479,7 +499,11 @@ func (s *server) prepareStableSnapshotExport(r *http.Request, ticket exportTicke
 		_ = artifact.Close()
 		_ = os.Remove(artifact.Name())
 	}
-	if err = registry.export(r.Context(), ticket.Snapshot, ticket.SessionID, ticket.RecordsSHA256, artifact); err != nil {
+	done := make(chan error, 1)
+	go func() {
+		done <- registry.export(r.Context(), ticket.Snapshot, ticket.SessionID, ticket.RecordsSHA256, artifact)
+	}()
+	if err = waitStableSnapshotExport(done, stableExportHeartbeatInterval, heartbeat); err != nil {
 		cleanup()
 		return nil, 0, err
 	}
