@@ -100,7 +100,7 @@ func (s *Store) BeginStableSessionSnapshot(lowerBound time.Time, afterIngestFenc
 		WHERE ?=1 AND events.sequence>? AND events.sequence<=? AND events.previous_session_id<>''
 	), selected(session_id) AS (
 		SELECT DISTINCT records.session_id
-		FROM records
+		FROM records INDEXED BY idx_records_session_snapshot_metadata
 		WHERE ?=0
 		   OR julianday(records.completed_at)>=julianday(?)
 		   OR EXISTS(SELECT 1 FROM changed WHERE changed.session_id=records.session_id)
@@ -117,7 +117,7 @@ func (s *Store) BeginStableSessionSnapshot(lowerBound time.Time, afterIngestFenc
 		COALESCE((SELECT MAX(events.recorded_at) FROM archive_ingest_events events
 			WHERE (events.session_id=selected.session_id OR events.previous_session_id=selected.session_id) AND events.sequence<=?),'')
 	FROM selected
-	LEFT JOIN records ON records.session_id=selected.session_id
+	LEFT JOIN records INDEXED BY idx_records_session_snapshot_metadata ON records.session_id=selected.session_id
 	LEFT JOIN session_export_digests d ON d.session_id=selected.session_id
 	GROUP BY selected.session_id
 	ORDER BY COALESCE(MAX(records.completed_at),(SELECT MAX(events.recorded_at) FROM archive_ingest_events events
