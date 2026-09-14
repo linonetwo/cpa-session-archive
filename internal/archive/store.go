@@ -739,13 +739,173 @@ func (s *Store) ExportSessionJSONL(ctx context.Context, id string, dst io.Writer
 // ExportArchiveJSONL streams the lossless normalized archive. An empty id
 // exports the complete database in deterministic session/time order.
 func (s *Store) ExportArchiveJSONL(ctx context.Context, id string, dst io.Writer) error {
-	query := `SELECT request_id FROM records ORDER BY session_id,started_at,id`
-	args := []any{}
-	if id != "" {
-		query = `SELECT request_id FROM records WHERE session_id=? ORDER BY started_at,id`
-		args = append(args, id)
+	enc := json.NewEncoder(dst)
+	enc.SetEscapeHTML(false)
+	if id == "" {
+		return s.exportFullArchiveLegacy(ctx, enc, dst)
 	}
-	rows, err := s.DB.QueryContext(ctx, query, args...)
+	return s.exportSessionArchiveBatches(ctx, id, enc, dst)
+}
+
+const archiveExportBatchSize = 128
+const archiveExportBatchBytes = 16 << 20
+const archiveExportCacheBytes = 16 << 20
+const archiveExportCacheEntryBytes = 1 << 20
+
+// exportSessionArchiveBatches walks the session index with a seek cursor.  It
+// deliberately reads each records row once, rather than first collecting IDs
+// and then randomly looking every row up again through Request().
+func (s *Store) exportSessionArchiveBatches(ctx context.Context, sessionID string, enc *json.Encoder, dst io.Writer) error {
+	var afterStarted string
+	var afterID int64
+	for {
+		rows, err := s.DB.QueryContext(ctx, `SELECT id,session_id,request_id,trace_id,COALESCE(key_id,''),COALESCE(principal_id,''),COALESCE(credential_hash,''),COALESCE((SELECT alias FROM credential_principals p WHERE p.principal_id=records.principal_id AND alias<>'' ORDER BY updated_at DESC LIMIT 1),''),COALESCE(summary,''),COALESCE(response_preview,''),COALESCE(source_format,''),COALESCE(requested_model,''),COALESCE(model,''),stream,COALESCE(outcome,''),status_code,COALESCE(error,''),started_at,completed_at,COALESCE(parent_response_id,''),COALESCE(response_id,''),COALESCE(original_ref,''),COALESCE(upstream_ref,''),COALESCE(response_ref,''),truncated,COALESCE(metadata_json,''),COALESCE(facets_json,''),original_request_gz,upstream_request_gz,response_gz FROM records WHERE session_id=? AND (started_at>? OR (started_at=? AND id>?)) ORDER BY started_at,id LIMIT ?`, sessionID, afterStarted, afterStarted, afterID, archiveExportBatchSize)
+		if err != nil {
+			return err
+		}
+		batch := make([]archiveExportRow, 0, archiveExportBatchSize)
+		var batchBytes int
+		limitedByBytes := false
+		for rows.Next() {
+			item, scanErr := scanArchiveExportRow(rows)
+			if scanErr != nil {
+				_ = rows.Close()
+				return scanErr
+			}
+			batch = append(batch, item)
+			batchBytes += item.residentBytes()
+			// A single pre-existing large legacy row remains exportable. Stop
+			// before retaining another row once the bounded batch is full.
+			if archiveExportBatchShouldStop(batchBytes) {
+				limitedByBytes = true
+				break
+			}
+		}
+		if err = rows.Err(); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		if err = rows.Close(); err != nil {
+			return err
+		}
+		payloadCache := archivePayloadCache{values: map[string][]byte{}}
+		for _, item := range batch {
+			if err = s.encodeArchiveExportRow(ctx, enc, dst, item, &payloadCache); err != nil {
+				return err
+			}
+			afterStarted, afterID = item.started, item.id
+		}
+		if len(batch) < archiveExportBatchSize && !limitedByBytes {
+			return nil
+		}
+	}
+}
+
+func archiveExportBatchShouldStop(bytes int) bool {
+	return bytes >= archiveExportBatchBytes
+}
+
+type archiveExportRow struct {
+	id               int64
+	started          string
+	record           Record
+	or, ur, rr       string
+	oldO, oldU, oldR []byte
+	metadata, facets string
+}
+
+func scanArchiveExportRow(rows *sql.Rows) (archiveExportRow, error) {
+	var item archiveExportRow
+	var stream, trunc int
+	var done string
+	err := rows.Scan(&item.id, &item.record.SessionID, &item.record.RequestID, &item.record.TraceID, &item.record.KeyID, &item.record.PrincipalID, &item.record.CredentialHash, &item.record.PrincipalAlias, &item.record.Summary, &item.record.ResponsePreview, &item.record.SourceFormat, &item.record.RequestedModel, &item.record.Model, &stream, &item.record.Outcome, &item.record.StatusCode, &item.record.Error, &item.started, &done, &item.record.ParentResponseID, &item.record.ResponseID, &item.or, &item.ur, &item.rr, &trunc, &item.metadata, &item.facets, &item.oldO, &item.oldU, &item.oldR)
+	if err != nil {
+		return item, err
+	}
+	item.record.Stream = stream != 0
+	item.record.Truncated = trunc != 0
+	item.record.StartedAt, _ = time.Parse(time.RFC3339Nano, item.started)
+	item.record.CompletedAt, _ = time.Parse(time.RFC3339Nano, done)
+	return item, nil
+}
+
+func (item archiveExportRow) residentBytes() int {
+	return len(item.record.SessionID) + len(item.record.RequestID) + len(item.record.TraceID) + len(item.record.KeyID) + len(item.record.PrincipalID) + len(item.record.CredentialHash) + len(item.record.PrincipalAlias) + len(item.record.Summary) + len(item.record.ResponsePreview) + len(item.record.SourceFormat) + len(item.record.RequestedModel) + len(item.record.Model) + len(item.record.Outcome) + len(item.record.Error) + len(item.record.ParentResponseID) + len(item.record.ResponseID) + len(item.started) + len(item.or) + len(item.ur) + len(item.rr) + len(item.metadata) + len(item.facets) + len(item.oldO) + len(item.oldU) + len(item.oldR)
+}
+
+func (s *Store) encodeArchiveExportRow(ctx context.Context, enc *json.Encoder, dst io.Writer, item archiveExportRow, payloadCache *archivePayloadCache) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	var err error
+	if item.or != "" {
+		item.record.OriginalRequest, err = loadPayloadWithCache(ctx, s.DB, item.or, payloadCache)
+	} else {
+		item.record.OriginalRequest = gunzipBytes(item.oldO)
+	}
+	if err != nil {
+		return err
+	}
+	if item.ur != "" {
+		item.record.UpstreamRequest, err = loadPayloadWithCache(ctx, s.DB, item.ur, payloadCache)
+	} else if s.StoreUpstream {
+		item.record.UpstreamRequest = gunzipBytes(item.oldU)
+	}
+	if err != nil {
+		return err
+	}
+	if item.rr != "" {
+		item.record.Response, err = loadPayloadWithCache(ctx, s.DB, item.rr, payloadCache)
+	} else {
+		item.record.Response = gunzipBytes(item.oldR)
+	}
+	if err != nil {
+		return err
+	}
+	_ = json.Unmarshal([]byte(item.metadata), &item.record.Metadata)
+	_ = json.Unmarshal([]byte(item.facets), &item.record.Facets)
+	training := TrainingRecord{SchemaVersion: 2, SessionID: item.record.SessionID, RequestID: item.record.RequestID, StartedAt: item.record.StartedAt, CompletedAt: item.record.CompletedAt, KeyID: item.record.KeyID, PrincipalID: item.record.PrincipalID, CredentialHash: item.record.CredentialHash, PrincipalAlias: item.record.PrincipalAlias, RequestedModel: item.record.RequestedModel, Model: item.record.Model, Outcome: item.record.Outcome, StatusCode: item.record.StatusCode, Metadata: item.record.Metadata, Facets: item.record.Facets, Request: decodedPayload(item.record.OriginalRequest), Response: decodedPayload(item.record.Response)}
+	if err = enc.Encode(training); err != nil {
+		return err
+	}
+	if f, ok := dst.(interface{ Flush() }); ok {
+		f.Flush()
+	}
+	return nil
+}
+
+type archivePayloadCache struct {
+	values map[string][]byte
+	bytes  int
+}
+
+func archivePayloadCacheCanStore(cacheBytes, entryBytes int) bool {
+	return entryBytes <= archiveExportCacheEntryBytes && cacheBytes+entryBytes <= archiveExportCacheBytes
+}
+
+func loadPayloadWithCache(ctx context.Context, q queryContext, hash string, cache *archivePayloadCache) ([]byte, error) {
+	load := func(ref string) ([]byte, error) {
+		if value, ok := cache.values[ref]; ok {
+			return value, nil
+		}
+		value, err := loadBlobWithQuery(ctx, q, ref)
+		if err == nil && archivePayloadCacheCanStore(cache.bytes, len(value)) {
+			cache.values[ref] = value
+			cache.bytes += len(value)
+		}
+		return value, err
+	}
+	manifest, err := load(hash)
+	if err != nil {
+		return nil, err
+	}
+	return ExpandPayload(manifest, load)
+}
+
+// Full archives retain their legacy path. Stable ticketed exports always name
+// one session and use the bounded seek implementation above.
+func (s *Store) exportFullArchiveLegacy(ctx context.Context, enc *json.Encoder, dst io.Writer) error {
+	rows, err := s.DB.QueryContext(ctx, `SELECT request_id FROM records ORDER BY session_id,started_at,id`)
 	if err != nil {
 		return err
 	}
@@ -761,18 +921,13 @@ func (s *Store) ExportArchiveJSONL(ctx context.Context, id string, dst io.Writer
 	if err = rows.Err(); err != nil {
 		return err
 	}
-	enc := json.NewEncoder(dst)
-	enc.SetEscapeHTML(false)
 	for _, requestID := range ids {
-		if err = ctx.Err(); err != nil {
+		record, err := s.Request(ctx, requestID)
+		if err != nil {
 			return err
 		}
-		r, loadErr := s.Request(ctx, requestID)
-		if loadErr != nil {
-			return loadErr
-		}
-		item := TrainingRecord{SchemaVersion: 2, SessionID: r.SessionID, RequestID: r.RequestID, StartedAt: r.StartedAt, CompletedAt: r.CompletedAt, KeyID: r.KeyID, PrincipalID: r.PrincipalID, CredentialHash: r.CredentialHash, PrincipalAlias: r.PrincipalAlias, RequestedModel: r.RequestedModel, Model: r.Model, Outcome: r.Outcome, StatusCode: r.StatusCode, Metadata: r.Metadata, Facets: r.Facets, Request: decodedPayload(r.OriginalRequest), Response: decodedPayload(r.Response)}
-		if err = enc.Encode(item); err != nil {
+		training := TrainingRecord{SchemaVersion: 2, SessionID: record.SessionID, RequestID: record.RequestID, StartedAt: record.StartedAt, CompletedAt: record.CompletedAt, KeyID: record.KeyID, PrincipalID: record.PrincipalID, CredentialHash: record.CredentialHash, PrincipalAlias: record.PrincipalAlias, RequestedModel: record.RequestedModel, Model: record.Model, Outcome: record.Outcome, StatusCode: record.StatusCode, Metadata: record.Metadata, Facets: record.Facets, Request: decodedPayload(record.OriginalRequest), Response: decodedPayload(record.Response)}
+		if err = enc.Encode(training); err != nil {
 			return err
 		}
 		if f, ok := dst.(interface{ Flush() }); ok {
