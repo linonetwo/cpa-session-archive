@@ -256,7 +256,7 @@ func (s *server) ready(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not ready", http.StatusServiceUnavailable)
 		return
 	}
-	if _, err := s.s.Stats(r.Context()); err != nil {
+	if err := s.s.DB.PingContext(r.Context()); err != nil {
 		http.Error(w, "not ready", http.StatusServiceUnavailable)
 		return
 	}

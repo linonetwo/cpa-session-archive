@@ -1,19 +1,19 @@
-# v0.8.5 release contract
+# v0.8.6 release contract
 
 GitHub is the only source and release system, and GHCR is the only container
 registry. The canonical code repository is `linonetwo/cpa-session-archive`.
 
-`v0.8.5` succeeds the immutable `v0.8.4` release without moving, deleting, or
-reusing an earlier tag or release. It contains the offline stable-session
-archive bounded sequential-read repair.
+`v0.8.6` succeeds the immutable `v0.8.5` release without moving, deleting, or
+reusing an earlier tag or release. It contains the offline collector readiness
+liveness repair.
 
 ## Identity and gates
 
-The release workflow accepts only `refs/tags/v0.8.5`. Before publishing, it
+The release workflow accepts only `refs/tags/v0.8.6`. Before publishing, it
 requires all of the following:
 
 - the tag checkout and `GITHUB_SHA` are the same complete 40-character commit;
-- `internal/archive/version.go` declares `0.8.5`;
+- `internal/archive/version.go` declares `0.8.6`;
 - the commit is reachable from `origin/main`;
 - that exact main commit has a completed successful `ci` workflow run.
 

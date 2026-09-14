@@ -135,6 +135,23 @@ func TestHealthFailureIsGeneric(t *testing.T) {
 	}
 }
 
+func TestReadyFailureIsGenericWhenDatabaseIsUnavailable(t *testing.T) {
+	store, err := archive.OpenStore(filepath.Join(t.TempDir(), "archive.sqlite"), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = store.DB.Close(); err != nil {
+		t.Fatal(err)
+	}
+	startupReady := make(chan struct{})
+	close(startupReady)
+	response := httptest.NewRecorder()
+	(&server{s: store, startupReady: startupReady}).ready(response, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if response.Code != http.StatusServiceUnavailable || strings.TrimSpace(response.Body.String()) != "not ready" {
+		t.Fatalf("status=%d body=%q", response.Code, response.Body.String())
+	}
+}
+
 func TestPreviewPayloadFailureBlocksReadinessWithoutCompletionMarker(t *testing.T) {
 	cases := []struct {
 		name   string
