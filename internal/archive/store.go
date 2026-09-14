@@ -49,13 +49,77 @@ type Stats struct {
 	SavedBytes      int64 `json:"saved_bytes"`
 }
 
+const (
+	stableSnapshotMetadataIndexName   = "idx_records_session_snapshot_metadata"
+	stableSnapshotMetadataIndexSQL    = `CREATE INDEX IF NOT EXISTS idx_records_session_snapshot_metadata ON records(session_id,started_at,completed_at)`
+	archiveSchemaMigrationLogInterval = 30 * time.Second
+)
+
+type archiveMigrationLogf func(string, ...any)
+
+func ensureStableSnapshotMetadataIndex(db *sql.DB, progressInterval time.Duration, logf archiveMigrationLogf) error {
+	var exists bool
+	if err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='index' AND name=?)`, stableSnapshotMetadataIndexName).Scan(&exists); err != nil {
+		return err
+	}
+	if exists {
+		return nil
+	}
+
+	started := time.Now()
+	logf("archive schema migration started: name=%s", stableSnapshotMetadataIndexName)
+	stopProgress := startArchiveMigrationProgress(started, progressInterval, logf)
+	_, err := db.Exec(stableSnapshotMetadataIndexSQL)
+	stopProgress()
+	elapsed := time.Since(started).Round(time.Second)
+	if err != nil {
+		logf("archive schema migration failed: name=%s elapsed=%s", stableSnapshotMetadataIndexName, elapsed)
+		return err
+	}
+	logf("archive schema migration completed: name=%s elapsed=%s", stableSnapshotMetadataIndexName, elapsed)
+	return nil
+}
+
+func startArchiveMigrationProgress(started time.Time, interval time.Duration, logf archiveMigrationLogf) func() {
+	if interval <= 0 {
+		return func() {}
+	}
+	ticker := time.NewTicker(interval)
+	stop := make(chan struct{})
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		defer ticker.Stop()
+		reportArchiveMigrationProgress(started, ticker.C, stop, logf)
+	}()
+	return func() {
+		close(stop)
+		<-stopped
+	}
+}
+
+func reportArchiveMigrationProgress(started time.Time, ticks <-chan time.Time, stop <-chan struct{}, logf archiveMigrationLogf) {
+	for {
+		select {
+		case tick := <-ticks:
+			logf("archive schema migration in progress: name=%s elapsed=%s", stableSnapshotMetadataIndexName, tick.Sub(started).Round(time.Second))
+		case <-stop:
+			return
+		}
+	}
+}
+
 func OpenStore(path string, storeUpstream bool) (*Store, error) {
 	db, e := sql.Open("sqlite3", path+"?_busy_timeout=5000&_journal_mode=WAL&_synchronous=NORMAL&_foreign_keys=on")
 	if e != nil {
 		return nil, e
 	}
-	schema := `CREATE TABLE IF NOT EXISTS records(id INTEGER PRIMARY KEY,request_id TEXT NOT NULL UNIQUE,trace_id TEXT,session_id TEXT NOT NULL,key_id TEXT,source_format TEXT,requested_model TEXT,model TEXT,stream INTEGER,outcome TEXT,status_code INTEGER,error TEXT,started_at TEXT,completed_at TEXT,parent_response_id TEXT,response_id TEXT,original_request_gz BLOB,upstream_request_gz BLOB,response_gz BLOB,truncated INTEGER,metadata_json TEXT);CREATE TABLE IF NOT EXISTS record_facets(request_id TEXT NOT NULL,name TEXT NOT NULL,value TEXT NOT NULL,PRIMARY KEY(request_id,name,value));CREATE INDEX IF NOT EXISTS idx_facets_name_value ON record_facets(name,value);CREATE TABLE IF NOT EXISTS blobs(hash TEXT PRIMARY KEY,media_type TEXT,raw_size INTEGER NOT NULL,codec TEXT NOT NULL,data BLOB NOT NULL);CREATE INDEX IF NOT EXISTS idx_records_session_time ON records(session_id,started_at);CREATE INDEX IF NOT EXISTS idx_records_session_snapshot_metadata ON records(session_id,started_at,completed_at);CREATE INDEX IF NOT EXISTS idx_records_key_time ON records(key_id,started_at);CREATE INDEX IF NOT EXISTS idx_records_model_time ON records(requested_model,started_at);CREATE TABLE IF NOT EXISTS session_summaries(session_id TEXT PRIMARY KEY,requests INTEGER NOT NULL,first_at TEXT NOT NULL,last_at TEXT NOT NULL,key_id TEXT NOT NULL DEFAULT '',model TEXT NOT NULL DEFAULT '',project TEXT NOT NULL DEFAULT '',summary TEXT NOT NULL DEFAULT '',summary_at TEXT NOT NULL DEFAULT '');CREATE TABLE IF NOT EXISTS session_facets(session_id TEXT NOT NULL,name TEXT NOT NULL,value TEXT NOT NULL,PRIMARY KEY(session_id,name,value));CREATE INDEX IF NOT EXISTS idx_session_facets_name_value ON session_facets(name,value);CREATE TABLE IF NOT EXISTS session_indexed_requests(request_id TEXT PRIMARY KEY,session_id TEXT NOT NULL);CREATE TABLE IF NOT EXISTS normalized_response_requests(request_id TEXT PRIMARY KEY);CREATE TABLE IF NOT EXISTS previewed_requests(request_id TEXT PRIMARY KEY,version INTEGER NOT NULL DEFAULT 1);CREATE TABLE IF NOT EXISTS repair_versions(name TEXT PRIMARY KEY,version INTEGER NOT NULL);`
+	schema := `CREATE TABLE IF NOT EXISTS records(id INTEGER PRIMARY KEY,request_id TEXT NOT NULL UNIQUE,trace_id TEXT,session_id TEXT NOT NULL,key_id TEXT,source_format TEXT,requested_model TEXT,model TEXT,stream INTEGER,outcome TEXT,status_code INTEGER,error TEXT,started_at TEXT,completed_at TEXT,parent_response_id TEXT,response_id TEXT,original_request_gz BLOB,upstream_request_gz BLOB,response_gz BLOB,truncated INTEGER,metadata_json TEXT);CREATE TABLE IF NOT EXISTS record_facets(request_id TEXT NOT NULL,name TEXT NOT NULL,value TEXT NOT NULL,PRIMARY KEY(request_id,name,value));CREATE INDEX IF NOT EXISTS idx_facets_name_value ON record_facets(name,value);CREATE TABLE IF NOT EXISTS blobs(hash TEXT PRIMARY KEY,media_type TEXT,raw_size INTEGER NOT NULL,codec TEXT NOT NULL,data BLOB NOT NULL);CREATE INDEX IF NOT EXISTS idx_records_session_time ON records(session_id,started_at);CREATE INDEX IF NOT EXISTS idx_records_key_time ON records(key_id,started_at);CREATE INDEX IF NOT EXISTS idx_records_model_time ON records(requested_model,started_at);CREATE TABLE IF NOT EXISTS session_summaries(session_id TEXT PRIMARY KEY,requests INTEGER NOT NULL,first_at TEXT NOT NULL,last_at TEXT NOT NULL,key_id TEXT NOT NULL DEFAULT '',model TEXT NOT NULL DEFAULT '',project TEXT NOT NULL DEFAULT '',summary TEXT NOT NULL DEFAULT '',summary_at TEXT NOT NULL DEFAULT '');CREATE TABLE IF NOT EXISTS session_facets(session_id TEXT NOT NULL,name TEXT NOT NULL,value TEXT NOT NULL,PRIMARY KEY(session_id,name,value));CREATE INDEX IF NOT EXISTS idx_session_facets_name_value ON session_facets(name,value);CREATE TABLE IF NOT EXISTS session_indexed_requests(request_id TEXT PRIMARY KEY,session_id TEXT NOT NULL);CREATE TABLE IF NOT EXISTS normalized_response_requests(request_id TEXT PRIMARY KEY);CREATE TABLE IF NOT EXISTS previewed_requests(request_id TEXT PRIMARY KEY,version INTEGER NOT NULL DEFAULT 1);CREATE TABLE IF NOT EXISTS repair_versions(name TEXT PRIMARY KEY,version INTEGER NOT NULL);`
 	if _, e = db.Exec(schema); e != nil {
+		return nil, e
+	}
+	if e = ensureStableSnapshotMetadataIndex(db, archiveSchemaMigrationLogInterval, log.Printf); e != nil {
+		_ = db.Close()
 		return nil, e
 	}
 	for _, q := range []string{"ALTER TABLE records ADD COLUMN original_ref TEXT", "ALTER TABLE records ADD COLUMN upstream_ref TEXT", "ALTER TABLE records ADD COLUMN response_ref TEXT", "ALTER TABLE records ADD COLUMN facets_json TEXT", "ALTER TABLE records ADD COLUMN summary TEXT", "ALTER TABLE records ADD COLUMN response_preview TEXT", "ALTER TABLE records ADD COLUMN principal_id TEXT", "ALTER TABLE records ADD COLUMN credential_hash TEXT", "ALTER TABLE session_summaries ADD COLUMN principal_id TEXT NOT NULL DEFAULT ''"} {
