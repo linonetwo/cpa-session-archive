@@ -41,6 +41,15 @@ func TestWaitStableSnapshotExportSendsHeartbeatsUntilMaterialized(t *testing.T) 
 	}
 }
 
+func TestStableExportErrorClassDoesNotExposeErrorDetail(t *testing.T) {
+	if got := stableExportErrorClass(context.DeadlineExceeded); got != "deadline" {
+		t.Fatalf("deadline class=%q", got)
+	}
+	if got := stableExportErrorClass(errors.New("sensitive error detail")); got != "internal" {
+		t.Fatalf("unknown class=%q", got)
+	}
+}
+
 type stablePageResponse struct {
 	SnapshotSchemaVersion         int                            `json:"snapshot_schema_version"`
 	CursorProtocol                string                         `json:"cursor_protocol"`
