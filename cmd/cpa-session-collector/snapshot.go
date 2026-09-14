@@ -486,6 +486,31 @@ func waitStableSnapshotExport(done <-chan error, interval time.Duration, heartbe
 	}
 }
 
+func stableExportArtifactSize(artifact *os.File) int64 {
+	info, err := artifact.Stat()
+	if err != nil {
+		return -1
+	}
+	return info.Size()
+}
+
+func stableExportErrorClass(err error) string {
+	switch {
+	case err == nil:
+		return "none"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "deadline"
+	case errors.Is(err, context.Canceled):
+		return "cancelled"
+	case errors.Is(err, errStableSnapshotExpired):
+		return "snapshot-expired"
+	case errors.Is(err, archive.ErrSnapshotCursor):
+		return "snapshot-cursor"
+	default:
+		return "internal"
+	}
+}
+
 func (s *server) prepareStableSnapshotExport(r *http.Request, ticket exportTicket, heartbeat func()) (*os.File, int64, error) {
 	registry, err := s.stableRegistry()
 	if err != nil {
@@ -500,10 +525,16 @@ func (s *server) prepareStableSnapshotExport(r *http.Request, ticket exportTicke
 		_ = os.Remove(artifact.Name())
 	}
 	done := make(chan error, 1)
+	started := time.Now()
 	go func() {
 		done <- registry.export(r.Context(), ticket.Snapshot, ticket.SessionID, ticket.RecordsSHA256, artifact)
 	}()
-	if err = waitStableSnapshotExport(done, stableExportHeartbeatInterval, heartbeat); err != nil {
+	progress := func() {
+		log.Printf("stable export materializing elapsed_seconds=%d artifact_bytes=%d", int64(time.Since(started).Seconds()), stableExportArtifactSize(artifact))
+		heartbeat()
+	}
+	if err = waitStableSnapshotExport(done, stableExportHeartbeatInterval, progress); err != nil {
+		log.Printf("stable export materialization failed elapsed_seconds=%d artifact_bytes=%d error_class=%s", int64(time.Since(started).Seconds()), stableExportArtifactSize(artifact), stableExportErrorClass(err))
 		cleanup()
 		return nil, 0, err
 	}
@@ -516,5 +547,6 @@ func (s *server) prepareStableSnapshotExport(r *http.Request, ticket exportTicke
 		cleanup()
 		return nil, 0, err
 	}
+	log.Printf("stable export materialization completed elapsed_seconds=%d artifact_bytes=%d error_class=none", int64(time.Since(started).Seconds()), info.Size())
 	return artifact, info.Size(), nil
 }
