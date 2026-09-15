@@ -89,7 +89,9 @@ func TestStableFullSnapshotQueryMatchesReferenceProjection(t *testing.T) {
 			(1,'request-z','session-Z','2026-09-14T01:00:00Z','2026-09-14T05:00:00Z'),
 			(2,'request-unicode','session-Ω','2026-09-14T02:00:00Z','2026-09-14T05:00:00Z'),
 			(3,'request-prev-a','session-prev','2026-09-14T03:00:00Z',NULL),
-			(4,'request-prev-b','session-prev','2026-09-14T04:00:00Z',NULL);
+			(4,'request-prev-b','session-prev','2026-09-14T04:00:00Z',NULL),
+			(5,'request-empty','session-Z-empty','2026-09-14T07:00:00Z',''),
+			(6,'request-null','session-A-null','2026-09-14T08:00:00Z',NULL);
 		INSERT INTO archive_ingest_events(sequence,request_id,session_id,previous_session_id,recorded_at) VALUES
 			(10,'request-z','session-Z','','2026-09-14T04:00:00Z'),
 			(11,'request-unicode','session-Ω','','2026-09-14T04:00:00Z'),
@@ -106,8 +108,10 @@ func TestStableFullSnapshotQueryMatchesReferenceProjection(t *testing.T) {
 	if _, err = store.DB.Exec(`
 		INSERT INTO session_export_digests(session_id,requests,first_at,last_at,records_sha256,max_ingest_sequence,updated_at) VALUES
 			('session-Ω',1,'2026-09-14T02:00:00Z','2026-09-14T05:00:00Z',?,11,'2026-09-14T07:00:00Z'),
-			('session-prev',2,'2026-09-14T03:00:00Z','',?,12,'2026-09-14T07:00:00Z')
-	`, strings.Repeat("b", 64), strings.Repeat("c", 64)); err != nil {
+			('session-prev',2,'2026-09-14T03:00:00Z','',?,12,'2026-09-14T07:00:00Z'),
+			('session-Z-empty',1,'2026-09-14T07:00:00Z','',?,0,'2026-09-14T09:00:00Z'),
+			('session-A-null',1,'2026-09-14T08:00:00Z','',?,0,'2026-09-14T09:00:00Z')
+	`, strings.Repeat("b", 64), strings.Repeat("c", 64), strings.Repeat("d", 64), strings.Repeat("e", 64)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -117,7 +121,7 @@ func TestStableFullSnapshotQueryMatchesReferenceProjection(t *testing.T) {
 	if !reflect.DeepEqual(optimized, reference) {
 		t.Fatalf("optimized full projection differs from reference:\noptimized=%+v\nreference=%+v", optimized, reference)
 	}
-	if len(optimized) != 3 || optimized[0].sessionID != "session-prev" || optimized[1].sessionID != "session-Z" || optimized[2].sessionID != "session-Ω" {
+	if len(optimized) != 5 || optimized[0].sessionID != "session-prev" || optimized[1].sessionID != "session-Z" || optimized[2].sessionID != "session-Ω" || optimized[3].sessionID != "session-Z-empty" || optimized[4].sessionID != "session-A-null" {
 		t.Fatalf("unexpected empty-time/event or binary tie ordering: %+v", optimized)
 	}
 	if optimized[0].sessionFence != 12 || optimized[0].changedAt.String != "2026-09-14T06:00:00Z" {

@@ -64,13 +64,13 @@ const stableFullSnapshotQuery = `WITH full_projection AS MATERIALIZED (
 		COALESCE((SELECT MAX(events.sequence) FROM archive_ingest_events events
 			WHERE (events.session_id=records.session_id OR events.previous_session_id=records.session_id) AND events.sequence<=?),0) AS session_fence,
 		COALESCE(d.records_sha256,'') AS records_sha256,COALESCE(d.max_ingest_sequence,-1) AS digest_fence,
-		COALESCE((SELECT MAX(events.recorded_at) FROM archive_ingest_events events
-			WHERE (events.session_id=records.session_id OR events.previous_session_id=records.session_id) AND events.sequence<=?),'') AS changed_at
+		(SELECT MAX(events.recorded_at) FROM archive_ingest_events events
+			WHERE (events.session_id=records.session_id OR events.previous_session_id=records.session_id) AND events.sequence<=?) AS changed_at
 	FROM records INDEXED BY idx_records_session_snapshot_metadata
 	LEFT JOIN session_export_digests d ON d.session_id=records.session_id
 	GROUP BY records.session_id
 )
-SELECT session_id,requests,first_at,last_at,session_fence,records_sha256,digest_fence,0 AS deleted,changed_at
+SELECT session_id,requests,first_at,last_at,session_fence,records_sha256,digest_fence,0 AS deleted,COALESCE(changed_at,'')
 FROM full_projection
 ORDER BY COALESCE(last_at,changed_at) DESC,session_id COLLATE BINARY ASC`
 
