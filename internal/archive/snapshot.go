@@ -58,6 +58,22 @@ type StableSessionSnapshot struct {
 	sessionSetSHA256   string
 }
 
+const stableFullSnapshotQuery = `WITH full_projection AS MATERIALIZED (
+	SELECT records.session_id,COUNT(records.id) AS requests,
+		MIN(records.started_at) AS first_at,MAX(records.completed_at) AS last_at,
+		COALESCE((SELECT MAX(events.sequence) FROM archive_ingest_events events
+			WHERE (events.session_id=records.session_id OR events.previous_session_id=records.session_id) AND events.sequence<=?),0) AS session_fence,
+		COALESCE(d.records_sha256,'') AS records_sha256,COALESCE(d.max_ingest_sequence,-1) AS digest_fence,
+		(SELECT MAX(events.recorded_at) FROM archive_ingest_events events
+			WHERE (events.session_id=records.session_id OR events.previous_session_id=records.session_id) AND events.sequence<=?) AS changed_at
+	FROM records INDEXED BY idx_records_session_snapshot_metadata
+	LEFT JOIN session_export_digests d ON d.session_id=records.session_id
+	GROUP BY records.session_id
+)
+SELECT session_id,requests,first_at,last_at,session_fence,records_sha256,digest_fence,0 AS deleted,COALESCE(changed_at,'')
+FROM full_projection
+ORDER BY COALESCE(last_at,changed_at) DESC,session_id COLLATE BINARY ASC`
+
 func (s *Store) BeginStableSessionSnapshot(lowerBound time.Time, afterIngestFence *int64) (*StableSessionSnapshot, error) {
 	tx, err := s.DB.BeginTx(context.Background(), &sql.TxOptions{ReadOnly: true})
 	if err != nil {
@@ -91,7 +107,11 @@ func (s *Store) BeginStableSessionSnapshot(lowerBound time.Time, afterIngestFenc
 		after = *afterIngestFence
 	}
 	lower := canonicalTimestamp(lowerBound)
-	rows, err := tx.QueryContext(context.Background(), `WITH changed(session_id) AS (
+	var rows *sql.Rows
+	if afterIngestFence == nil {
+		rows, err = tx.QueryContext(context.Background(), stableFullSnapshotQuery, ingestFence, ingestFence)
+	} else {
+		rows, err = tx.QueryContext(context.Background(), `WITH changed(session_id) AS (
 		SELECT events.session_id
 		FROM archive_ingest_events events
 		WHERE ?=1 AND events.sequence>? AND events.sequence<=?
@@ -124,6 +144,7 @@ func (s *Store) BeginStableSessionSnapshot(lowerBound time.Time, afterIngestFenc
 	ORDER BY COALESCE(MAX(records.completed_at),(SELECT MAX(events.recorded_at) FROM archive_ingest_events events
 		WHERE (events.session_id=selected.session_id OR events.previous_session_id=selected.session_id) AND events.sequence<=?)) DESC,
 		selected.session_id COLLATE BINARY ASC`, useDelta, after, ingestFence, useDelta, after, ingestFence, useDelta, lower, ingestFence, ingestFence, ingestFence)
+	}
 	if err != nil {
 		return nil, err
 	}
